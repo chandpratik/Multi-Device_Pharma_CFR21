@@ -8,6 +8,7 @@ from typing import Any
 import cfr21.audit_trail as audit
 from cfr21.authorization import SessionContext, authorize_session
 from cfr21.db import get_conn_ctx
+from cfr21.reauthentication_service import ReauthenticationError, consume_grant
 from cfr21.user_manager import User
 
 
@@ -64,20 +65,28 @@ class VersionControlService:
         return version_id
 
     def approve_configuration(self, actor: User, session_id: str, version_id: str,
-                              reason: str) -> None:
+                              reason: str, reauthentication_grant_id: str = "") -> None:
         self._approve(actor, session_id, "configuration_versions", "approve_configurations",
-                      version_id, reason, "CONFIGURATION_VERSION_APPROVED")
+                      version_id, reason, "CONFIGURATION_VERSION_APPROVED",
+                      reauthentication_grant_id)
 
     def approve_recipe(self, actor: User, session_id: str, version_id: str,
-                       reason: str) -> None:
+                       reason: str, reauthentication_grant_id: str = "") -> None:
         self._approve(actor, session_id, "recipe_versions", "approve_recipes",
-                      version_id, reason, "RECIPE_VERSION_APPROVED")
+                      version_id, reason, "RECIPE_VERSION_APPROVED",
+                      reauthentication_grant_id)
 
     def _approve(self, actor: User, session_id: str, table: str, permission: str,
-                 version_id: str, reason: str, action: str) -> None:
+                 version_id: str, reason: str, action: str,
+                 reauthentication_grant_id: str) -> None:
         actor = self._authorize(actor, session_id, permission, f"version:{version_id}")
         if not reason.strip():
             raise VersionControlError("An approval reason is required.")
+        try:
+            consume_grant(actor, session_id, reauthentication_grant_id,
+                          permission, f"version:{version_id}")
+        except ReauthenticationError as exc:
+            raise VersionControlError("Recent reauthentication is required to approve a version.") from exc
         with get_conn_ctx() as conn:
             row = conn.execute(f"SELECT created_by, approval_status FROM {table} WHERE id = ?", (version_id,)).fetchone()
             if row is None or row["approval_status"] != "pending":
