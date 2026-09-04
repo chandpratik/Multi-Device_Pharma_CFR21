@@ -755,8 +755,6 @@ class AdvancedSettingsPage(QStackedWidget):
         # CFR21: re-authenticate before saving settings (§11.200)
         if self._sm and self._sm.is_logged_in:
             from gui.cfr_dialogs import ReauthDialog, ReasonDialog
-            import cfr21.audit_trail as audit
-
             reauth = ReauthDialog(
                 self._sm,
                 action_description="save system settings",
@@ -776,20 +774,19 @@ class AdvancedSettingsPage(QStackedWidget):
         else:
             change_reason = None
 
-        if not new_cfg.save():
+        from cfr21.settings_service import save_settings
+        ok, message = save_settings(
+            self._sm.current_user if self._sm else None,
+            self._sm.session_id if self._sm else "",
+            new_cfg,
+            change_reason or "",
+        )
+        if not ok:
             QMessageBox.warning(self.parentWidget(), "Save Failed",
-                                "Could not write settings file.")
+                                message)
             return
 
-        # CFR21: audit the settings change
         if self._sm and self._sm.is_logged_in:
-            audit.log(
-                user       = self._sm.current_user,
-                action     = audit.ACTION_SETTINGS_CHANGED,
-                detail     = "System settings saved via Advanced Settings page.",
-                session_id = self._sm.session_id,
-                reason     = change_reason,
-            )
             self._sm.ping()
 
         QMessageBox.information(
