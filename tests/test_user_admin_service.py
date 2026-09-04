@@ -8,6 +8,7 @@ from cfr21.user_admin_service import (
     reactivate_account,
     reset_password,
 )
+from cfr21.reauthentication_service import issue_grant
 
 
 def test_authorized_admin_session_can_create_account(admin_user):
@@ -71,10 +72,14 @@ def test_password_reset_requires_authorized_admin_session(admin_user, operator_u
         "ResetPass@789",
     )
     assert not ok
+    grant = issue_grant(
+        admin_user, "s-1", "AdminTest@123", "manage_users",
+        f"user:{operator_user.username}")
     ok, msg = reset_password(
         admin_user,
         "s-1",
         operator_user.username,
         "ResetPass@789",
+        grant,
     )
     assert ok, msg

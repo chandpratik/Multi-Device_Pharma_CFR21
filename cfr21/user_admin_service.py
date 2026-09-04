@@ -9,6 +9,7 @@ from cfr21.user_manager import (
     deactivate_user,
     reactivate_user,
 )
+from cfr21.reauthentication_service import ReauthenticationError, consume_grant
 import cfr21.audit_trail as audit
 
 
@@ -79,11 +80,17 @@ class UserAdministrationService:
         return ok, msg
 
     def reset_password(self, admin_user: User, session_id: str,
-                       target_username: str, new_password: str) -> tuple[bool, str]:
+                       target_username: str, new_password: str,
+                       reauthentication_grant_id: str = "") -> tuple[bool, str]:
         try:
             actor = self._authorize_admin(admin_user, session_id, target_username)
         except AuthorizationError:
             return False, "You are not authorized to reset passwords."
+        try:
+            consume_grant(actor, session_id, reauthentication_grant_id,
+                          "manage_users", f"user:{target_username}")
+        except ReauthenticationError:
+            return False, "Recent reauthentication is required to reset passwords."
 
         return admin_reset_password(
             actor,
@@ -112,10 +119,11 @@ def reactivate_account(admin_user: User, session_id: str,
 
 
 def reset_password(admin_user: User, session_id: str, target_username: str,
-                   new_password: str) -> tuple[bool, str]:
+                   new_password: str, reauthentication_grant_id: str = "") -> tuple[bool, str]:
     return _SERVICE.reset_password(
         admin_user,
         session_id,
         target_username,
         new_password,
+        reauthentication_grant_id,
     )
