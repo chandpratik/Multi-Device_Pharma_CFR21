@@ -29,9 +29,14 @@ import cfr21.audit_trail as audit
 from cfr21.session_manager import SessionManager
 from cfr21.user_manager import (
     ROLE_ADMINISTRATOR, ROLE_QA, ROLE_SUPERVISOR,
-    get_all_users, create_user, deactivate_user,
-    reactivate_user, admin_reset_password,
+    get_all_users,
     ALL_ROLES, ROLE_DISPLAY,
+)
+from cfr21.user_admin_service import (
+    create_account,
+    deactivate_account,
+    reactivate_account,
+    reset_password,
 )
 from cfr21.record_integrity import get_integrity_records, verify_batch_files
 import cfr21.report_export as report_export
@@ -787,14 +792,9 @@ class UserManagementPage(QWidget):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        ok, msg = deactivate_user(self._sm.current_user, u.username)
+        ok, msg = deactivate_account(
+            self._sm.current_user, self._sm.session_id, u.username)
         if ok:
-            audit.log(
-                user       = self._sm.current_user,
-                action     = audit.ACTION_USER_DEACTIVATED,
-                detail     = f"Account '{u.username}' deactivated.",
-                session_id = self._sm.session_id,
-            )
             self.refresh()
             QMessageBox.information(self, "Done",
                                     f"Account '{u.username}' deactivated.")
@@ -809,14 +809,9 @@ class UserManagementPage(QWidget):
             QMessageBox.information(self, "Already Active",
                                     "That account is already active.")
             return
-        ok, msg = reactivate_user(self._sm.current_user, u.username)
+        ok, msg = reactivate_account(
+            self._sm.current_user, self._sm.session_id, u.username)
         if ok:
-            audit.log(
-                user       = self._sm.current_user,
-                action     = audit.ACTION_USER_REACTIVATED,
-                detail     = f"Account '{u.username}' reactivated.",
-                session_id = self._sm.session_id,
-            )
             self.refresh()
             QMessageBox.information(self, "Done",
                                     f"Account '{u.username}' reactivated.")
@@ -833,9 +828,8 @@ class UserManagementPage(QWidget):
         if dlg.exec() != dlg.DialogCode.Accepted:
             return
 
-        ok, msg = admin_reset_password(
-            self._sm.current_user, u.username, dlg.new_password,
-            session_id = self._sm.session_id,   # audit written inside function
+        ok, msg = reset_password(
+            self._sm.current_user, self._sm.session_id, u.username, dlg.new_password
         )
         if ok:
             QMessageBox.information(
@@ -852,19 +846,10 @@ class UserManagementPage(QWidget):
         password = self._new_pw.text()
         role     = self._new_role.currentData()
 
-        ok, msg = create_user(
-            self._sm.current_user, username, password, role
+        ok, msg = create_account(
+            self._sm.current_user, self._sm.session_id, username, password, role
         )
         if ok:
-            audit.log(
-                user       = self._sm.current_user,
-                action     = audit.ACTION_USER_CREATED,
-                detail     = (
-                    f"Account '{username}' (role: {ROLE_DISPLAY[role]}) "
-                    f"created by '{self._sm.current_user.username}'."
-                ),
-                session_id = self._sm.session_id,
-            )
             self._new_user.clear()
             self._new_pw.clear()
             self.refresh()
