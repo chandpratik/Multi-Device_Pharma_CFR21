@@ -244,7 +244,8 @@ class RegulatedRecordService:
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 batch = conn.execute("""
-                    SELECT external_batch_id, state, operator_id, product_name
+                    SELECT external_batch_id, state, operator_id, product_name,
+                           recipe_version_id
                     FROM regulated_batches WHERE id = ?
                 """, (batch_id,)).fetchone()
                 if batch is None or batch["state"] != STATE_ACTIVE:
@@ -262,7 +263,18 @@ class RegulatedRecordService:
                     SELECT COALESCE(MAX(sequence_no), 0) + 1 FROM scan_records
                     WHERE batch_id = ? AND device_id = ?
                 """, (batch_id, device_id)).fetchone()[0]
-                recipe_version_id = self._get_or_create_recipe(conn, actor, master_data)
+                recipe_version_id = batch["recipe_version_id"]
+                if recipe_version_id:
+                    recipe = conn.execute("""
+                        SELECT id, approval_status FROM recipe_versions WHERE id = ?
+                    """, (recipe_version_id,)).fetchone()
+                    if recipe is None or recipe["approval_status"] != "approved":
+                        raise RegulatedRecordError(
+                            "Scan rejected: the batch recipe version is not approved.")
+                else:
+                    # Compatibility batches predate controlled setup. New
+                    # production batches always supply recipe_version_id.
+                    recipe_version_id = self._get_or_create_recipe(conn, actor, master_data)
                 device_registry_id = self._require_assigned_device(
                     conn, batch_id, device_id,
                     device_source or f"device-{device_id}")
