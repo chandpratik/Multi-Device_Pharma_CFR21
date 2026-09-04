@@ -57,14 +57,19 @@ except ImportError:
 
 # ── Colour palette (matches app theme) ───────────────────────────────────────
 
-_BLUE       = colors.HexColor("#0062a3")
-_DARK       = colors.HexColor("#1a1e24")
-_LIGHT_GREY = colors.HexColor("#f4f5f7")
-_MID_GREY   = colors.HexColor("#d0d4da")
-_RED        = colors.HexColor("#c0392b")
-_GREEN      = colors.HexColor("#1a7a3a")
-_AMBER      = colors.HexColor("#e67e22")
-_WHITE      = colors.white
+if REPORTLAB_OK:
+    _BLUE       = colors.HexColor("#0062a3")
+    _DARK       = colors.HexColor("#1a1e24")
+    _LIGHT_GREY = colors.HexColor("#f4f5f7")
+    _MID_GREY   = colors.HexColor("#d0d4da")
+    _RED        = colors.HexColor("#c0392b")
+    _GREEN      = colors.HexColor("#1a7a3a")
+    _AMBER      = colors.HexColor("#e67e22")
+    _WHITE      = colors.white
+else:
+    # Keep module importable when optional PDF support is absent; decorated
+    # export functions return a clear dependency error before using these.
+    _BLUE = _DARK = _LIGHT_GREY = _MID_GREY = _RED = _GREEN = _AMBER = _WHITE = None
 
 
 # ── Guard decorator ───────────────────────────────────────────────────────────
