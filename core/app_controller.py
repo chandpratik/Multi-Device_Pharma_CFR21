@@ -37,6 +37,7 @@ class AppController:
         self._cfr_user = None
         self._cfr_session_id = ""
         self._regulated_batch_id = ""
+        self._prepared_batch_id = ""
         self._stopped_batch_id = ""
 
         # ── shared PLC ────────────────────────────────────────────────────────
@@ -181,20 +182,14 @@ class AppController:
     # ── logging ───────────────────────────────────────────────────────────────
 
     def start_logging(self):
-        """Start both devices. Applies current config before starting."""
-        actor = self._require_permission("start_logging", target="logging")
-        self._apply_config()
-        session = self._loggers[1].session
-        self._regulated_batch_id = self._regulated_records.start_or_resume_batch(
-            actor=actor,
-            external_batch_id=session.batch_id,
-            operator_id=session.operator_id,
-            product_name=session.product_name,
-            configuration=self.config,
-            session_id=self._cfr_session_id,
-        )
-        self._start_regulated_loggers()
-        log.info("Logging started — both devices")
+        """Start only a batch that passed the controlled setup workflow."""
+        if not self._prepared_batch_id:
+            raise RuntimeError(
+                "Controlled batch setup is required before logging can start.")
+        batch_id = self._prepared_batch_id
+        self.start_prepared_batch(batch_id, "controlled acquisition start")
+        self._prepared_batch_id = ""
+        log.info("Logging started — controlled batch %s", batch_id)
 
     def prepare_controlled_batch(self, configuration_version_id: str,
                                  recipe_version_id: str,
@@ -212,6 +207,7 @@ class AppController:
         status = self._regulated_records.get_batch_status(batch_id)
         self._batch_setup.configure_batch(
             actor, self._cfr_session_id, batch_id, status["version"], reason)
+        self._prepared_batch_id = batch_id
         return batch_id
 
     def start_prepared_batch(self, batch_id: str, reason: str = "") -> None:
