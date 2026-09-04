@@ -100,7 +100,7 @@ boundary established first.
 
 - [x] Extend the device registry with immutable identity, display name, approval
   status, enabled status, approval/deactivation actor, timestamp, and reason.
-- [ ] Add controlled service operations to register, approve, deactivate, and
+- [x] Add controlled service operations to register, approve, deactivate, and
   replace devices; require the approved permissions and audit each action.
 - [x] Add versioned batch-to-device assignments and prohibit assignment changes
   after the batch becomes active.
@@ -108,7 +108,7 @@ boundary established first.
   unapproved device must fail closed.
 - [x] In the same transaction as each scan insert, verify the device is enabled,
   approved, assigned to that batch, and matches the expected serial/source.
-- [ ] Stop or quarantine acquisition safely if a device becomes unauthorized or
+- [x] Stop or quarantine acquisition safely if a device becomes unauthorized or
   its identity changes during a batch, and create an actionable audit event.
 
 ## 7. Control recipes and configuration
