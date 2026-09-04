@@ -19,6 +19,13 @@ reconciliation, review, and release.
 Reject protected actions when no session exists, account is inactive/locked,
 session is expired/locked, or database identity differs from session identity.
 
+**Acquisition policy:** acquisition has no independent system identity in Part
+2. Each scan validates the issuing interactive session at the authoritative
+record boundary. A lock, logout, expiry, revocation, or account lock therefore
+rejects the next scan, records denial/quarantine evidence as applicable, and
+halts acquisition. Continuing acquisition through a locked session requires a
+separately approved, narrowly scoped system identity in a later change.
+
 ### Batch workflow
 
 Enforce transitions such as:

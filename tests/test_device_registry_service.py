@@ -68,3 +68,31 @@ def test_assignment_change_after_acquisition_is_rejected(admin_user):
         pass
     else:
         raise AssertionError("An active batch accepted a device assignment change")
+
+
+def test_disabled_or_unapproved_assigned_device_fails_closed(admin_user):
+    service = RegulatedRecordService()
+    batch_id = service.start_or_resume_batch(
+        admin_user, "DEVICE-REGISTRY-STATUS", "admin", "Tablet", {}, "s-4")
+    with db.get_conn_ctx() as conn:
+        conn.execute("UPDATE devices SET enabled = 0 WHERE source_identifier = 'device-1'")
+    try:
+        service.record_scan(admin_user, batch_id, 1, "A", "A", "PASS",
+                            "admin", "Tablet", "s-4")
+    except RegulatedRecordError:
+        pass
+    else:
+        raise AssertionError("A disabled device was accepted by scan capture")
+
+    with db.get_conn_ctx() as conn:
+        conn.execute("""
+            UPDATE devices SET enabled = 1, approval_status = 'pending'
+            WHERE source_identifier = 'device-1'
+        """)
+    try:
+        service.record_scan(admin_user, batch_id, 1, "B", "B", "PASS",
+                            "admin", "Tablet", "s-4")
+    except RegulatedRecordError:
+        pass
+    else:
+        raise AssertionError("An unapproved device was accepted by scan capture")
