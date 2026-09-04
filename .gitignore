@@ -1,0 +1,32 @@
+# Python environments, bytecode, and test/tool caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local configuration and credentials
+.env
+.env.*
+*.local
+
+# Runtime records and generated artifacts — retained by the application,
+# but never versioned in source control.
+config/logs/
+compliance.db
+compliance.db-*
+crash_log.txt
+*.log
+
+# Build and packaging output
+build/
+dist/
+*.spec
+
+# IDE and OS metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

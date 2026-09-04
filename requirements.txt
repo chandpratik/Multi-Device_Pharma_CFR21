@@ -1,0 +1,32 @@
+# Pharma Code Datalogger — 21 CFR Part 11 Compliant Edition
+# Pinned dependency versions for Installation Qualification (IQ).
+#
+# Install with:
+#   pip install -r requirements.txt
+#
+# Version pinning rationale: a validated system must be reproducible.
+# Any dependency upgrade requires re-validation of affected functionality.
+
+# ── GUI framework ────────────────────────────────────────────────────────────
+PyQt6==6.7.1
+PyQt6-Qt6==6.7.3
+PyQt6-sip==13.8.0
+
+# ── Security / authentication ────────────────────────────────────────────────
+bcrypt==4.2.0
+
+# ── Data output ──────────────────────────────────────────────────────────────
+openpyxl==3.1.5          # Excel batch records
+reportlab==4.2.2         # PDF audit trail + batch record export
+
+# ── Hardware communication ───────────────────────────────────────────────────
+pymodbus==3.7.2          # PLC Modbus/TCP
+
+# ── Visualization ────────────────────────────────────────────────────────────
+pyqtgraph==0.13.7        # Live pass/fail charts
+
+# ── Build tooling (not needed at runtime) ────────────────────────────────────
+# pyinstaller==6.10.0    # uncomment when building the exe
+
+# ── Test tooling (not needed at runtime) ─────────────────────────────────────
+pytest==8.3.2            # automated validation suite
