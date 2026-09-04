@@ -28,6 +28,7 @@ _WRITE_LOCK = threading.RLock()
 # Recovery is deliberately distinct from reconciliation. Evidence may be
 # completed without immediately returning a batch to data acquisition.
 _TRANSITION_PERMISSIONS = {
+    ("draft", "configured"): "start_logging",
     ("configured", STATE_ACTIVE): "start_logging",
     (STATE_RECONCILED, STATE_ACTIVE): "recover_batches",
     (STATE_ACTIVE, STATE_STOPPED): "stop_logging",

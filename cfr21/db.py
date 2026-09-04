@@ -65,7 +65,7 @@ from typing import Generator
 log = logging.getLogger("pharma.cfr21.db")
 
 # ── Schema version — bump this when adding columns or tables ──────────────────
-_SCHEMA_VERSION = 11
+_SCHEMA_VERSION = 12
 
 
 # ── Database path ─────────────────────────────────────────────────────────────
@@ -399,7 +399,13 @@ def _migrate():
         if current < 11:
             _migrate_v11_controlled_versions(conn)
             conn.execute("UPDATE schema_version SET version = 11")
+            current = 11
             log.info("Schema migrated to version 11 - controlled recipe/configuration versions")
+
+        if current < 12:
+            _migrate_v12_protect_batch_version_links(conn)
+            conn.execute("UPDATE schema_version SET version = 12")
+            log.info("Schema migrated to version 12 - immutable batch version links")
 
 
 def _validate_permission_matrix():
@@ -733,6 +739,26 @@ def _migrate_v11_controlled_versions(conn):
             BEFORE DELETE ON {table}
             BEGIN SELECT RAISE(ABORT, '{table} cannot be deleted'); END
         """)
+
+
+def _migrate_v12_protect_batch_version_links(conn):
+    """Protect the recipe version link added after the original batch trigger."""
+    conn.execute("DROP TRIGGER IF EXISTS prevent_regulated_batch_identity_update")
+    conn.execute("""
+        CREATE TRIGGER prevent_regulated_batch_identity_update
+        BEFORE UPDATE ON regulated_batches
+        WHEN NEW.id IS NOT OLD.id
+          OR NEW.external_batch_id IS NOT OLD.external_batch_id
+          OR NEW.operator_id IS NOT OLD.operator_id
+          OR NEW.product_name IS NOT OLD.product_name
+          OR NEW.configuration_json IS NOT OLD.configuration_json
+          OR NEW.configuration_version_id IS NOT OLD.configuration_version_id
+          OR NEW.recipe_version_id IS NOT OLD.recipe_version_id
+          OR NEW.created_at IS NOT OLD.created_at
+          OR NEW.created_by IS NOT OLD.created_by
+          OR NEW.started_at IS NOT OLD.started_at
+        BEGIN SELECT RAISE(ABORT, 'regulated batch identity is immutable'); END
+    """)
 
 
 def _seed_default_admin():
