@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 
 import cfr21.db as db
+from conftest import issue_test_session
 from cfr21.reauthentication_service import (
     ReauthenticationError,
     consume_grant,
@@ -47,3 +48,14 @@ def test_expired_grant_is_rejected(admin_user):
         pass
     else:
         raise AssertionError("An expired reauthentication grant was accepted")
+
+
+def test_grant_cannot_be_used_from_a_different_issued_session(admin_user):
+    issue_test_session(admin_user, "s-other")
+    grant_id = _grant(admin_user)
+    try:
+        consume_grant(admin_user, "s-other", grant_id, "manage_devices", "device:test")
+    except ReauthenticationError:
+        pass
+    else:
+        raise AssertionError("A grant was accepted from a different session")
