@@ -20,6 +20,8 @@ from comms.camera import CameraClient
 from comms.plc_modbus import PLCClient
 from comms.excel_wal import WALExcelLogger
 from cfr21.authorization import AuthorizationError, SessionContext, authorize_session
+from cfr21.batch_setup_service import BatchSetupService
+from cfr21.device_registry_service import DeviceRegistryService
 from cfr21.regulated_records import RegulatedRecordService
 
 log = logging.getLogger("pharma.controller")
@@ -30,6 +32,8 @@ class AppController:
     def __init__(self, config: AppConfig):
         self.config = config
         self._regulated_records = RegulatedRecordService()
+        self._batch_setup = BatchSetupService()
+        self._device_registry = DeviceRegistryService()
         self._cfr_user = None
         self._cfr_session_id = ""
         self._regulated_batch_id = ""
@@ -191,6 +195,48 @@ class AppController:
         )
         self._start_regulated_loggers()
         log.info("Logging started — both devices")
+
+    def prepare_controlled_batch(self, configuration_version_id: str,
+                                 recipe_version_id: str,
+                                 device_registry_ids: list[str],
+                                 reason: str) -> str:
+        """Create/configure a draft batch before any acquisition thread starts."""
+        session = self._loggers[1].session
+        actor = self._require_permission("start_logging", target=session.batch_id)
+        batch_id = self._batch_setup.create_draft(
+            actor, self._cfr_session_id, session.batch_id, session.operator_id,
+            session.product_name, configuration_version_id, recipe_version_id)
+        for device_id in device_registry_ids:
+            self._device_registry.assign_device(
+                actor, self._cfr_session_id, batch_id, device_id, reason)
+        status = self._regulated_records.get_batch_status(batch_id)
+        self._batch_setup.configure_batch(
+            actor, self._cfr_session_id, batch_id, status["version"], reason)
+        return batch_id
+
+    def start_prepared_batch(self, batch_id: str, reason: str = "") -> None:
+        """Activate a configured controlled batch and then start hardware IO."""
+        actor = self._require_permission("start_logging", target=f"batch:{batch_id}")
+        status = self._regulated_records.get_batch_status(batch_id)
+        self._batch_setup.activate_batch(
+            actor, self._cfr_session_id, batch_id, status["version"], reason)
+        self._apply_config()
+        self._regulated_batch_id = batch_id
+        self._start_regulated_loggers()
+
+    def review_batch(self, batch_id: str, reason: str) -> int:
+        """Record an authorized review after stop or reconciliation."""
+        status = self._regulated_records.get_batch_status(batch_id)
+        return self._regulated_records.transition_batch(
+            self._cfr_user, batch_id, "reviewed", status["version"],
+            self._cfr_session_id, reason)
+
+    def release_batch(self, batch_id: str, reason: str) -> int:
+        """Release a reviewed batch; only released batches can be closed."""
+        status = self._regulated_records.get_batch_status(batch_id)
+        return self._regulated_records.transition_batch(
+            self._cfr_user, batch_id, "released", status["version"],
+            self._cfr_session_id, reason)
 
     def recover_interrupted_batch(self, reason: str):
         """Reconcile the current session batch, then restart acquisition.
