@@ -65,7 +65,7 @@ from typing import Generator
 log = logging.getLogger("pharma.cfr21.db")
 
 # ── Schema version — bump this when adding columns or tables ──────────────────
-_SCHEMA_VERSION = 12
+_SCHEMA_VERSION = 13
 
 
 # ── Database path ─────────────────────────────────────────────────────────────
@@ -405,7 +405,13 @@ def _migrate():
         if current < 12:
             _migrate_v12_protect_batch_version_links(conn)
             conn.execute("UPDATE schema_version SET version = 12")
+            current = 12
             log.info("Schema migrated to version 12 - immutable batch version links")
+
+        if current < 13:
+            _migrate_v13_reauthentication_grants(conn)
+            conn.execute("UPDATE schema_version SET version = 13")
+            log.info("Schema migrated to version 13 - reauthentication grants")
 
 
 def _validate_permission_matrix():
@@ -758,6 +764,27 @@ def _migrate_v12_protect_batch_version_links(conn):
           OR NEW.created_by IS NOT OLD.created_by
           OR NEW.started_at IS NOT OLD.started_at
         BEGIN SELECT RAISE(ABORT, 'regulated batch identity is immutable'); END
+    """)
+
+
+def _migrate_v13_reauthentication_grants(conn):
+    """Persist single-use, session-bound proof for sensitive actions."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS reauthentication_grants (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES user_sessions(session_id),
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            action TEXT NOT NULL,
+            target TEXT NOT NULL,
+            issued_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            consumed_at TEXT,
+            consumed_by_action TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_reauthentication_grants_lookup
+        ON reauthentication_grants(session_id, action, target, expires_at)
     """)
 
 
