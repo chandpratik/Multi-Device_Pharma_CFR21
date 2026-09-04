@@ -401,6 +401,7 @@ class ReauthDialog(QDialog):
         super().__init__(parent)
         self._sm = session_mgr
         self._action_desc = action_description
+        self.verified_password = ""
         self.setWindowTitle("Confirm Identity")
         self.setModal(True)
         self.setFixedWidth(380)
@@ -480,13 +481,17 @@ class ReauthDialog(QDialog):
             self.reject()
             return
 
+        password = self._inp_pw.text()
         ok, msg = self._sm.reauthenticate(
             self._sm.current_user.username,
-            self._inp_pw.text()
+            password
         )
         self._inp_pw.clear()
 
         if ok:
+            # Consumers immediately exchange this transient value for a
+            # session-bound backend grant; it is never persisted.
+            self.verified_password = password
             self.accept()
         else:
             self._lbl_error.setText(msg or "Incorrect password.")

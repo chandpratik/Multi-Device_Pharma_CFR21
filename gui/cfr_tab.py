@@ -829,8 +829,21 @@ class UserManagementPage(QWidget):
         if dlg.exec() != dlg.DialogCode.Accepted:
             return
 
+        from gui.cfr_dialogs import ReauthDialog
+        from cfr21.reauthentication_service import ReauthenticationError, issue_grant
+        reauth = ReauthDialog(self._sm, "reset this password", self)
+        if reauth.exec() != ReauthDialog.DialogCode.Accepted:
+            return
+        try:
+            grant = issue_grant(
+                self._sm.current_user, self._sm.session_id, reauth.verified_password,
+                "manage_users", f"user:{u.username}")
+        except ReauthenticationError as exc:
+            QMessageBox.critical(self, "Reauthentication Failed", str(exc))
+            return
+
         ok, msg = reset_password(
-            self._sm.current_user, self._sm.session_id, u.username, dlg.new_password
+            self._sm.current_user, self._sm.session_id, u.username, dlg.new_password, grant
         )
         if ok:
             QMessageBox.information(
