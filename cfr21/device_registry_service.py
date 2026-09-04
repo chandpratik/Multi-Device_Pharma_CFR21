@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import cfr21.audit_trail as audit
 from cfr21.authorization import SessionContext, authorize_session
 from cfr21.db import get_conn_ctx
+from cfr21.reauthentication_service import ReauthenticationError, consume_grant
 from cfr21.user_manager import User
 
 
@@ -53,10 +54,15 @@ class DeviceRegistryService:
         return device_id
 
     def approve_device(self, actor: User, session_id: str, device_id: str,
-                       reason: str) -> None:
+                       reason: str, reauthentication_grant_id: str = "") -> None:
         actor = self._authorize(actor, session_id, "manage_devices", f"device:{device_id}")
         if not reason.strip():
             raise DeviceRegistryError("A device approval reason is required.")
+        try:
+            consume_grant(actor, session_id, reauthentication_grant_id,
+                          "manage_devices", f"device:{device_id}")
+        except ReauthenticationError as exc:
+            raise DeviceRegistryError("Recent reauthentication is required to approve a device.") from exc
         with get_conn_ctx() as conn:
             updated = conn.execute("""
                 UPDATE devices
@@ -70,10 +76,15 @@ class DeviceRegistryService:
                   session_id=session_id, reason=reason.strip())
 
     def deactivate_device(self, actor: User, session_id: str, device_id: str,
-                          reason: str) -> None:
+                          reason: str, reauthentication_grant_id: str = "") -> None:
         actor = self._authorize(actor, session_id, "manage_devices", f"device:{device_id}")
         if not reason.strip():
             raise DeviceRegistryError("A device deactivation reason is required.")
+        try:
+            consume_grant(actor, session_id, reauthentication_grant_id,
+                          "manage_devices", f"device:{device_id}")
+        except ReauthenticationError as exc:
+            raise DeviceRegistryError("Recent reauthentication is required to deactivate a device.") from exc
         with get_conn_ctx() as conn:
             updated = conn.execute("""
                 UPDATE devices
@@ -129,12 +140,14 @@ def register_device(actor: User, session_id: str, device_number: int,
                                     display_name, reason)
 
 
-def approve_device(actor: User, session_id: str, device_id: str, reason: str) -> None:
-    _SERVICE.approve_device(actor, session_id, device_id, reason)
+def approve_device(actor: User, session_id: str, device_id: str, reason: str,
+                   reauthentication_grant_id: str = "") -> None:
+    _SERVICE.approve_device(actor, session_id, device_id, reason, reauthentication_grant_id)
 
 
-def deactivate_device(actor: User, session_id: str, device_id: str, reason: str) -> None:
-    _SERVICE.deactivate_device(actor, session_id, device_id, reason)
+def deactivate_device(actor: User, session_id: str, device_id: str, reason: str,
+                      reauthentication_grant_id: str = "") -> None:
+    _SERVICE.deactivate_device(actor, session_id, device_id, reason, reauthentication_grant_id)
 
 
 def assign_device(actor: User, session_id: str, batch_id: str, device_id: str,
