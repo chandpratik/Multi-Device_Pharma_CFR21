@@ -3,19 +3,38 @@
 This folder preserves the code-audit findings and implementation plans so they
 can be supplied as context in a later chat.
 
-- `01_audit_report.md` - evidence-based initial code audit.
-- `02_remediation_roadmap.md` - ordered remediation programme.
-- `03_part1_authoritative_record_store.md` - Part 1 design and status.
-- `04_part1_remaining_todo.md` - remaining Part 1 implementation checklist.
-- `05_part2_backend_security_workflow.md` - Part 2 scope and definition of done.
-- `06_part0_freeze_and_baseline.md` - Part 0 implementation plan.
-- `07_part3_audit_trail_controls.md` - Part 3 implementation plan.
-- `08_part4_electronic_signatures.md` - Part 4 implementation plan.
-- `09_part5_crash_and_recovery.md` - Part 5 implementation plan.
-- `10_part6_recipe_configuration_change_control.md` - Part 6 implementation plan.
-- `11_part7_backup_retention_restore_export.md` - Part 7 implementation plan.
-- `12_part8_credentials_and_admin_controls.md` - Part 8 implementation plan.
-- `13_part9_time_validation_release.md` - Part 9 implementation plan.
+## Folder map
+
+| Folder | Purpose |
+| --- | --- |
+| `00_overview/` | Initial audit findings and overall remediation roadmap. |
+| `part0_freeze_and_baseline/` | Baseline freeze and intended-use planning. |
+| `part1_authoritative_record_store/` | Authoritative regulated-record store design and remaining todo work. |
+| `part2_backend_security_workflow/` | Backend security/workflow design and implementation checklist. |
+| `part3_audit_trail_controls/` | Audit-trail hardening plan. |
+| `part4_electronic_signatures/` | Electronic-signature implementation plan. |
+| `part5_crash_and_recovery/` | Crash recovery and reconciliation plan. |
+| `part6_recipe_configuration_change_control/` | Recipe/configuration version and approval plan. |
+| `part7_backup_retention_restore_export/` | Backup, retention, restore, and export plan. |
+| `part8_credentials_and_admin_controls/` | Credential and administrator hardening plan. |
+| `part9_time_validation_release/` | Time handling, validation, and release-control plan. |
+
+## Reading order
+
+1. `00_overview/01_audit_report.md`
+2. `00_overview/02_remediation_roadmap.md`
+3. `part0_freeze_and_baseline/implementation_plan.md`
+4. `part1_authoritative_record_store/design_and_status.md`
+5. `part1_authoritative_record_store/remaining_todo.md`
+6. `part2_backend_security_workflow/design_and_scope.md`
+7. `part2_backend_security_workflow/implementation_todo.md`
+8. `part3_audit_trail_controls/implementation_plan.md`
+9. `part4_electronic_signatures/implementation_plan.md`
+10. `part5_crash_and_recovery/implementation_plan.md`
+11. `part6_recipe_configuration_change_control/implementation_plan.md`
+12. `part7_backup_retention_restore_export/implementation_plan.md`
+13. `part8_credentials_and_admin_controls/implementation_plan.md`
+14. `part9_time_validation_release/implementation_plan.md`
 
 These are engineering planning artifacts, not validation evidence or a claim of
 21 CFR Part 11 compliance.
