@@ -65,7 +65,7 @@ from typing import Generator
 log = logging.getLogger("pharma.cfr21.db")
 
 # ── Schema version — bump this when adding columns or tables ──────────────────
-_SCHEMA_VERSION = 10
+_SCHEMA_VERSION = 11
 
 
 # ── Database path ─────────────────────────────────────────────────────────────
@@ -393,7 +393,13 @@ def _migrate():
         if current < 10:
             _migrate_v10_device_authorization(conn)
             conn.execute("UPDATE schema_version SET version = 10")
+            current = 10
             log.info("Schema migrated to version 10 - device authorization")
+
+        if current < 11:
+            _migrate_v11_controlled_versions(conn)
+            conn.execute("UPDATE schema_version SET version = 11")
+            log.info("Schema migrated to version 11 - controlled recipe/configuration versions")
 
 
 def _validate_permission_matrix():
@@ -685,6 +691,48 @@ def _migrate_v10_device_authorization(conn):
           OR NEW.source_identifier IS NOT OLD.source_identifier
         BEGIN SELECT RAISE(ABORT, 'device identity is immutable'); END
     """)
+
+
+def _migrate_v11_controlled_versions(conn):
+    """Add approval metadata while preserving immutable historical snapshots."""
+    version_columns = {
+        "version_number": "INTEGER NOT NULL DEFAULT 1",
+        "prior_version_id": "TEXT",
+        "change_reason": "TEXT NOT NULL DEFAULT ''",
+        "approval_status": "TEXT NOT NULL DEFAULT 'legacy'",
+        "approved_at": "TEXT",
+        "approved_by": "TEXT",
+        "effective_at": "TEXT",
+    }
+    for table in ("recipe_versions", "configuration_versions"):
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for name, definition in version_columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+    batch_columns = {row["name"] for row in conn.execute("PRAGMA table_info(regulated_batches)")}
+    if "recipe_version_id" not in batch_columns:
+        conn.execute("ALTER TABLE regulated_batches ADD COLUMN recipe_version_id TEXT")
+    # Version content never changes after creation. Approval metadata is allowed
+    # to advance separately, which preserves both the proposed value and review.
+    for table, value_column in (("recipe_versions", "master_data"),
+                                ("configuration_versions", "snapshot_json")):
+        conn.execute(f"""
+            CREATE TRIGGER IF NOT EXISTS prevent_{table}_content_update
+            BEFORE UPDATE ON {table}
+            WHEN NEW.id IS NOT OLD.id
+              OR NEW.{value_column} IS NOT OLD.{value_column}
+              OR NEW.created_at IS NOT OLD.created_at
+              OR NEW.created_by IS NOT OLD.created_by
+              OR NEW.version_number IS NOT OLD.version_number
+              OR NEW.prior_version_id IS NOT OLD.prior_version_id
+              OR NEW.change_reason IS NOT OLD.change_reason
+            BEGIN SELECT RAISE(ABORT, '{table} content is immutable'); END
+        """)
+        conn.execute(f"""
+            CREATE TRIGGER IF NOT EXISTS prevent_{table}_delete
+            BEFORE DELETE ON {table}
+            BEGIN SELECT RAISE(ABORT, '{table} cannot be deleted'); END
+        """)
 
 
 def _seed_default_admin():
