@@ -48,6 +48,10 @@ class StaleBatchStateError(RegulatedRecordError):
     """The batch changed after the caller read its expected version."""
 
 
+class DeviceAuthorizationError(RegulatedRecordError):
+    """Live acquisition used a device that is no longer valid for its batch."""
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
@@ -480,7 +484,7 @@ class RegulatedRecordService:
               AND d.enabled = 1
         """, (batch_id, number, source)).fetchone()
         if row is None:
-            raise RegulatedRecordError(
+            raise DeviceAuthorizationError(
                 "Scan rejected: device is unknown, unapproved, disabled, or not assigned to this batch.")
         return row["id"]
 

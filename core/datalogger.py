@@ -26,6 +26,7 @@ from core.models import (
 from comms.camera   import CameraClient
 from comms.plc_modbus import PLCClient
 from comms.excel_wal  import WALExcelLogger
+from cfr21.regulated_records import DeviceAuthorizationError
 
 log = logging.getLogger("pharma.datalogger")
 
@@ -332,6 +333,17 @@ class Datalogger:
                 rec.timestamp = datetime.fromisoformat(recorded_at)
                 self.wal_logger.append_record(rec)
             except Exception as e:
+                if isinstance(e, DeviceAuthorizationError):
+                    # The scan was rejected before any record was committed.
+                    # Persist a separate actionable event before quarantining IO.
+                    import cfr21.audit_trail as audit
+                    audit.log(
+                        user=self.regulated_actor,
+                        action=audit.ACTION_DEVICE_QUARANTINED,
+                        detail=(f"Device {self.device_id} quarantined for batch "
+                                f"'{self.session.batch_id}': {e}"),
+                        session_id=self.regulated_session_id,
+                    )
                 # Item 3: a record system that cannot record MUST stop loudly.
                 # Silent continuation means the screen shows healthy scans
                 # while the electronic record diverges from reality.
