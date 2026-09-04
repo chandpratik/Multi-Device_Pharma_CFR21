@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QFrame, QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractItemView, QComboBox, QLineEdit, QDateEdit,
     QMessageBox, QFileDialog, QStackedWidget, QSizePolicy,
-    QScrollArea, QCheckBox, QSpinBox,
+    QScrollArea, QCheckBox, QSpinBox, QInputDialog,
 )
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtCore import Qt, QDate, QTimer
@@ -974,7 +974,13 @@ class DeviceManagementPage(QWidget):
         deactivate = QPushButton("Deactivate Selected")
         deactivate.setStyleSheet(_S_DANGER_BTN)
         deactivate.clicked.connect(self._deactivate)
-        actions.addWidget(approve); actions.addWidget(deactivate); actions.addStretch()
+        replace = QPushButton("Replace Selected")
+        replace.setStyleSheet(_S_DANGER_BTN)
+        replace.clicked.connect(self._replace)
+        assign = QPushButton("Assign Selected")
+        assign.setStyleSheet(_S_SM_BTN)
+        assign.clicked.connect(self._assign)
+        actions.addWidget(approve); actions.addWidget(deactivate); actions.addWidget(replace); actions.addWidget(assign); actions.addStretch()
         layout.addLayout(actions)
 
     def _actor(self):
@@ -1046,6 +1052,50 @@ class DeviceManagementPage(QWidget):
                 self.refresh()
         except (DeviceRegistryError, ReauthenticationError) as exc:
             QMessageBox.critical(self, "Deactivation Blocked", str(exc))
+
+    def _replace(self):
+        row = self._selected()
+        if not row:
+            return
+        try:
+            grant = self._grant(row["id"])
+            if grant:
+                self._service.replace_device(
+                    self._sm.current_user, self._sm.session_id, row["id"],
+                    self._number.value(), self._source.text(), self._name.text(),
+                    self._reason.text() or "device replacement", grant)
+                self._source.clear(); self._name.clear(); self._reason.clear(); self.refresh()
+        except (DeviceRegistryError, ReauthenticationError) as exc:
+            QMessageBox.critical(self, "Replacement Blocked", str(exc))
+
+    def _assign(self):
+        row = self._selected()
+        actor = self._actor()
+        if not row or not actor:
+            return
+        from cfr21.db import get_conn
+        conn = get_conn()
+        try:
+            batches = conn.execute("""
+                SELECT id, external_batch_id FROM regulated_batches
+                WHERE state IN ('draft', 'configured') ORDER BY created_at DESC
+            """).fetchall()
+        finally:
+            conn.close()
+        if not batches:
+            QMessageBox.information(self, "No Eligible Batches",
+                                    "No draft or configured batch is available for assignment.")
+            return
+        labels = [f"{batch['external_batch_id']}  {batch['id']}" for batch in batches]
+        selected, ok = QInputDialog.getItem(self, "Assign Device", "Batch", labels, 0, False)
+        if not ok:
+            return
+        try:
+            self._service.assign_device(actor, self._sm.session_id,
+                                        batches[labels.index(selected)]["id"], row["id"],
+                                        self._reason.text() or "device assignment")
+        except DeviceRegistryError as exc:
+            QMessageBox.critical(self, "Assignment Blocked", str(exc))
 
 
 class FileIntegrityPage(QWidget):
