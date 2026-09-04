@@ -19,7 +19,7 @@ from datetime import datetime
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QFrame, QTabWidget, QScrollArea, QMessageBox,
-    QStackedWidget,QLineEdit,
+    QStackedWidget,QLineEdit, QInputDialog,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QBrush, QFont, QKeySequence, QShortcut
@@ -55,6 +55,7 @@ from gui.device_panel import DevicePanel
 from gui.dialogs import SessionSetupDialog, AdvancedSettingsPage
 # CFR21 imports
 import cfr21.audit_trail as audit
+from cfr21.db import get_conn
 from gui.cfr_dialogs import (
     ReauthDialog, ReasonDialog, ChangePasswordDialog,
     LoginDialog,
@@ -1638,6 +1639,8 @@ class MainWindow(QMainWindow):
 
         if not recovered:
             try:
+                if not self._prepare_controlled_batch():
+                    return
                 self._controller.start_logging()
             except Exception as exc:
                 QMessageBox.critical(self, "Logging Not Started", str(exc))
@@ -1660,6 +1663,56 @@ class MainWindow(QMainWindow):
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self.lbl_logging_badge.show()
+
+    def _prepare_controlled_batch(self) -> bool:
+        """Collect approved setup records before invoking the guarded start path."""
+        conn = get_conn()
+        try:
+            configurations = conn.execute("""
+                SELECT id, version_number FROM configuration_versions
+                WHERE approval_status = 'approved' ORDER BY effective_at DESC
+            """).fetchall()
+            recipes = conn.execute("""
+                SELECT id, version_number FROM recipe_versions
+                WHERE approval_status = 'approved' ORDER BY effective_at DESC
+            """).fetchall()
+            devices = []
+            for device_number in (1, 2):
+                logger = self._controller.logger(device_number)
+                row = conn.execute("""
+                    SELECT id FROM devices WHERE device_number = ? AND source_identifier = ?
+                      AND approval_status = 'approved' AND enabled = 1
+                """, (device_number, logger.regulated_device_source)).fetchone()
+                if row is None:
+                    QMessageBox.warning(
+                        self, "Device Setup Required",
+                        f"No approved device matches configured Device {device_number}.")
+                    return False
+                devices.append(row["id"])
+        finally:
+            conn.close()
+        if not configurations or not recipes:
+            QMessageBox.warning(self, "Controlled Setup Required",
+                                "An approved configuration and recipe are required.")
+            return False
+        config_labels = [f"v{row['version_number']}  {row['id']}" for row in configurations]
+        config_label, ok = QInputDialog.getItem(self, "Configuration Version",
+                                                 "Approved configuration", config_labels, 0, False)
+        if not ok:
+            return False
+        recipe_labels = [f"v{row['version_number']}  {row['id']}" for row in recipes]
+        recipe_label, ok = QInputDialog.getItem(self, "Recipe Version",
+                                                 "Approved recipe", recipe_labels, 0, False)
+        if not ok:
+            return False
+        reason = ReasonDialog("Controlled Batch Setup", "State the batch setup reason.", self)
+        if reason.exec() != ReasonDialog.DialogCode.Accepted:
+            return False
+        configuration_id = configurations[config_labels.index(config_label)]["id"]
+        recipe_id = recipes[recipe_labels.index(recipe_label)]["id"]
+        self._controller.prepare_controlled_batch(
+            configuration_id, recipe_id, devices, reason.reason)
+        return True
 
     def stop_logging(self):
         if not self._controller.is_running():
