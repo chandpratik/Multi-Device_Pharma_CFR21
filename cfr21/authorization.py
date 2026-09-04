@@ -6,6 +6,7 @@ from typing import Optional
 
 import cfr21.audit_trail as audit
 from cfr21.db import get_conn_ctx
+from cfr21.permissions import PROTECTED_OPERATIONS
 from cfr21.user_manager import User, get_user, get_workstation
 
 SESSION_ACTIVE = "active"
@@ -44,6 +45,8 @@ def authorize_session(context: SessionContext, permission: str,
     """Validate an issued active session and current role before proceeding."""
     actor: Optional[User] = None
     try:
+        if permission not in PROTECTED_OPERATIONS:
+            raise AuthorizationError("unknown_permission")
         if not context.session_id or not context.user_id or not context.username:
             raise AuthorizationError("missing_session")
 

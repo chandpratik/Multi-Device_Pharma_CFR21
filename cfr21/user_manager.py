@@ -37,73 +37,41 @@ from typing import Optional
 import bcrypt
 
 from cfr21.db import get_conn_ctx
+from cfr21.permissions import (
+    ALL_ROLES as CENTRAL_ALL_ROLES,
+    ROLE_ADMINISTRATOR as CENTRAL_ROLE_ADMINISTRATOR,
+    ROLE_DISPLAY as CENTRAL_ROLE_DISPLAY,
+    ROLE_OPERATOR as CENTRAL_ROLE_OPERATOR,
+    ROLE_PERMISSIONS,
+    ROLE_QA as CENTRAL_ROLE_QA,
+    ROLE_SUPERVISOR as CENTRAL_ROLE_SUPERVISOR,
+    role_has_permission,
+)
 
 log = logging.getLogger("pharma.cfr21.user_manager")
 
 # ── Role constants ────────────────────────────────────────────────────────────
 
-ROLE_ADMINISTRATOR = "administrator"
-ROLE_SUPERVISOR    = "supervisor"
-ROLE_OPERATOR      = "operator"
-ROLE_QA            = "qa"
+ROLE_ADMINISTRATOR = CENTRAL_ROLE_ADMINISTRATOR
+ROLE_SUPERVISOR    = CENTRAL_ROLE_SUPERVISOR
+ROLE_OPERATOR      = CENTRAL_ROLE_OPERATOR
+ROLE_QA            = CENTRAL_ROLE_QA
 
-ALL_ROLES = [ROLE_ADMINISTRATOR, ROLE_SUPERVISOR, ROLE_OPERATOR, ROLE_QA]
+ALL_ROLES = CENTRAL_ALL_ROLES
 
 # Role display names for UI
 ROLE_DISPLAY = {
-    ROLE_ADMINISTRATOR: "Administrator",
-    ROLE_SUPERVISOR:    "Supervisor",
-    ROLE_OPERATOR:      "Operator",
-    ROLE_QA:            "QA",
+    ROLE_ADMINISTRATOR: CENTRAL_ROLE_DISPLAY[ROLE_ADMINISTRATOR],
+    ROLE_SUPERVISOR:    CENTRAL_ROLE_DISPLAY[ROLE_SUPERVISOR],
+    ROLE_OPERATOR:      CENTRAL_ROLE_DISPLAY[ROLE_OPERATOR],
+    ROLE_QA:            CENTRAL_ROLE_DISPLAY[ROLE_QA],
 }
 
 # ── Permission map ────────────────────────────────────────────────────────────
 # Maps role → set of permission strings.
 # Check with: can(user, "start_logging")
 
-_PERMISSIONS: dict[str, set[str]] = {
-    ROLE_ADMINISTRATOR: {
-        "login",
-        "start_logging", "stop_logging",
-        "set_master_code", "clear_master_code",
-        "view_live", "view_reports", "view_audit_trail",
-        "export_reports",
-        "manage_users",
-        "recover_batches", "import_legacy_wal",
-        "change_settings",
-        "change_own_password",
-        "deactivate_product",
-        "recover_batches",
-        "connect_camera", "disconnect_camera", "connect_plc", "disconnect_plc",
-        "close_batch",
-    },
-    ROLE_SUPERVISOR: {
-        "login",
-        "start_logging", "stop_logging",
-        "set_master_code", "clear_master_code",
-        "view_live", "view_reports", "view_audit_trail",
-        "export_reports",
-        "change_own_password",
-        "deactivate_product",
-        "connect_camera", "disconnect_camera", "connect_plc", "disconnect_plc",
-        "close_batch",
-    },
-    ROLE_OPERATOR: {
-        "login",
-        "start_logging", "stop_logging",
-        "set_master_code", "clear_master_code",
-        "view_live",
-        "change_own_password",
-        "connect_camera", "disconnect_camera", "connect_plc", "disconnect_plc",
-        "close_batch",
-    },
-    ROLE_QA: {
-        "login",
-        "view_live", "view_reports", "view_audit_trail",
-        "export_reports",
-        "change_own_password",
-    },
-}
+_PERMISSIONS = ROLE_PERMISSIONS
 
 
 # ── User dataclass ────────────────────────────────────────────────────────────
@@ -132,7 +100,7 @@ class User:
 
     def can(self, permission: str) -> bool:
         """Return True if this user's role grants the given permission."""
-        return permission in _PERMISSIONS.get(self.role, set())
+        return role_has_permission(self.role, permission)
 
     def is_locked(self) -> bool:
         """Return True if the account is currently locked out."""

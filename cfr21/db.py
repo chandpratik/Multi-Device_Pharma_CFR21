@@ -142,6 +142,7 @@ def initialise():
     integrity check (corruption from power loss / bad disk).
     """
     log.info("Initialising compliance database at: %s", _db_path())
+    _validate_permission_matrix()
 
     # ── Corruption check on an existing DB before touching it ─────────────
     if os.path.exists(_db_path()):
@@ -381,6 +382,15 @@ def _migrate():
             _migrate_v8_authoritative_sessions(conn)
             conn.execute("UPDATE schema_version SET version = 8")
             log.info("Schema migrated to version 8 - authoritative sessions")
+
+
+def _validate_permission_matrix():
+    """Fail startup before DB work if protected operations lack role coverage."""
+    from cfr21.permissions import validate_permission_matrix
+
+    ok, problems = validate_permission_matrix()
+    if not ok:
+        raise RuntimeError("Invalid permission matrix: " + "; ".join(problems))
 
 
 def _migrate_v4_authoritative_records(conn):
