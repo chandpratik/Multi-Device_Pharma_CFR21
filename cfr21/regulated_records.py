@@ -360,6 +360,32 @@ class RegulatedRecordService:
                 for value in summary.values():
                     if value["last_sequence"] != value["record_count"]:
                         raise RegulatedRecordError("Sequence gap detected; batch cannot be resumed.")
+                assignments = conn.execute("""
+                    SELECT d.id, d.device_number, d.source_identifier
+                    FROM batch_device_assignments a
+                    JOIN devices d ON d.id = a.device_registry_id
+                    WHERE a.batch_id = ?
+                """, (batch["id"],)).fetchall()
+                if batch["recipe_version_id"] and not assignments:
+                    raise RegulatedRecordError(
+                        "Controlled batch has no device assignments for reconciliation.")
+                assigned_ids = {row["id"] for row in assignments}
+                scanned_ids = {row[0] for row in conn.execute("""
+                    SELECT DISTINCT device_registry_id FROM scan_records WHERE batch_id = ?
+                """, (batch["id"],)).fetchall() if row[0]}
+                if scanned_ids - assigned_ids:
+                    raise RegulatedRecordError(
+                        "Reconciliation found scan evidence from an unassigned device.")
+                # A zero-count assigned device is still explicit reconciliation
+                # evidence; it must not disappear merely because it captured no reads.
+                for assignment in assignments:
+                    summary.setdefault(str(assignment["device_number"]), {
+                        "pass": 0,
+                        "fail": 0,
+                        "last_sequence": 0,
+                        "record_count": 0,
+                        "source": assignment["source_identifier"],
+                    })
                 conn.execute("""UPDATE batch_reconciliations SET reconciled_at = ?, reconciled_by = ?,
                     recovery_reason = ?, status = 'completed', device_summary_json = ? WHERE batch_id = ?""",
                              (_utc_now(), actor.username, reason.strip(), json.dumps(summary, sort_keys=True), batch["id"]))
