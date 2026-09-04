@@ -61,6 +61,33 @@ def fresh_db(monkeypatch, tmp_path):
     os.chdir(tmp_path)
     try:
         db.initialise()
+        # Legacy record tests focus on scan integrity rather than device setup.
+        # Provision approved identities/assignments in test setup so those tests
+        # continue to exercise their intended record-writing paths.
+        from cfr21.regulated_records import RegulatedRecordService
+
+        original_start = RegulatedRecordService.start_or_resume_batch
+
+        def start_with_test_devices(service, *args, **kwargs):
+            batch_id = original_start(service, *args, **kwargs)
+            with db.get_conn_ctx() as conn:
+                for number, source in ((1, "device-1"), (2, "device-2"), (1, "cam-serial-1")):
+                    device_id = f"pytest-device-{number}-{source}"
+                    conn.execute("""
+                        INSERT OR IGNORE INTO devices (
+                            id, device_number, source_identifier, display_name,
+                            created_at, created_by, approval_status, enabled
+                        ) VALUES (?, ?, ?, ?, 'test', 'pytest', 'approved', 1)
+                    """, (device_id, number, source, source))
+                    conn.execute("""
+                        INSERT OR IGNORE INTO batch_device_assignments (
+                            id, batch_id, device_registry_id, assigned_at,
+                            assigned_by, assignment_reason
+                        ) VALUES (?, ?, ?, 'test', 'pytest', 'test fixture')
+                    """, (f"pytest-assignment-{batch_id}-{device_id}", batch_id, device_id))
+            return batch_id
+
+        monkeypatch.setattr(RegulatedRecordService, "start_or_resume_batch", start_with_test_devices)
         yield db_file
     finally:
         os.chdir(cwd)

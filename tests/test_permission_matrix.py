@@ -64,6 +64,8 @@ def test_backend_permission_checks_are_in_matrix():
         "cfr21/user_admin_service.py", {"authorize_session": 1})
     discovered |= _literal_permissions_from_calls(
         "cfr21/settings_service.py", {"authorize_session": 1})
+    discovered |= _literal_permissions_from_calls(
+        "cfr21/device_registry_service.py", {"authorize_session": 1})
 
     assert discovered <= PROTECTED_OPERATIONS
 

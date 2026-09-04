@@ -88,7 +88,8 @@ def import_legacy_wal(actor: User, source_path: str, evidence_directory: str,
                     status = "FAIL"
                 sequence = int(row.get("read_id") or index)
                 recipe = service._get_or_create_recipe(conn, actor, row.get("master_data", ""))
-                device_ref = service._get_or_create_device(conn, actor, device, "legacy-import")
+                device_ref = service._get_or_create_legacy_device(
+                    conn, actor, device, "legacy-import")
                 conn.execute("""INSERT INTO scan_records
                     (id, batch_id, device_id, sequence_no, recorded_at, raw_data, master_data, status,
                      operator_id, product_name, created_by, session_id, recipe_version_id,

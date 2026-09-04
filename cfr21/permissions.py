@@ -31,6 +31,8 @@ PROTECTED_OPERATIONS = {
     "import_legacy_wal",
     "login",
     "manage_users",
+    "manage_devices",
+    "assign_devices",
     "reconcile_batches",
     "recover_batches",
     "release_batches",
@@ -47,6 +49,7 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
     ROLE_ADMINISTRATOR: set(PROTECTED_OPERATIONS),
     ROLE_SUPERVISOR: {
         "change_own_password",
+        "assign_devices",
         "clear_master_code",
         "close_batch",
         "connect_camera",

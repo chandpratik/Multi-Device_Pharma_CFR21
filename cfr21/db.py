@@ -65,7 +65,7 @@ from typing import Generator
 log = logging.getLogger("pharma.cfr21.db")
 
 # ── Schema version — bump this when adding columns or tables ──────────────────
-_SCHEMA_VERSION = 9
+_SCHEMA_VERSION = 10
 
 
 # ── Database path ─────────────────────────────────────────────────────────────
@@ -387,7 +387,13 @@ def _migrate():
         if current < 9:
             _migrate_v9_batch_state_machine(conn)
             conn.execute("UPDATE schema_version SET version = 9")
+            current = 9
             log.info("Schema migrated to version 9 - controlled batch lifecycle")
+
+        if current < 10:
+            _migrate_v10_device_authorization(conn)
+            conn.execute("UPDATE schema_version SET version = 10")
+            log.info("Schema migrated to version 10 - device authorization")
 
 
 def _validate_permission_matrix():
@@ -636,6 +642,49 @@ def _migrate_v9_batch_state_machine(conn):
         ON regulated_batches(external_batch_id, state)
     """)
     _migrate_v5_immutable_regulated_records(conn)
+
+
+def _migrate_v10_device_authorization(conn):
+    """Add controlled approval and per-batch assignment metadata to devices."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(devices)")}
+    additions = {
+        "display_name": "TEXT NOT NULL DEFAULT ''",
+        "approval_status": "TEXT NOT NULL DEFAULT 'pending' CHECK(approval_status IN ('pending', 'approved', 'rejected'))",
+        "enabled": "INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1))",
+        "approved_at": "TEXT",
+        "approved_by": "TEXT",
+        "approval_reason": "TEXT",
+        "deactivated_at": "TEXT",
+        "deactivated_by": "TEXT",
+        "deactivation_reason": "TEXT",
+    }
+    for name, definition in additions.items():
+        if name not in columns:
+            conn.execute(f"ALTER TABLE devices ADD COLUMN {name} {definition}")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS batch_device_assignments (
+            id TEXT PRIMARY KEY,
+            batch_id TEXT NOT NULL REFERENCES regulated_batches(id),
+            device_registry_id TEXT NOT NULL REFERENCES devices(id),
+            assigned_at TEXT NOT NULL,
+            assigned_by TEXT NOT NULL,
+            assignment_reason TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1 CHECK(version > 0),
+            UNIQUE(batch_id, device_registry_id)
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_batch_device_assignments_batch
+        ON batch_device_assignments(batch_id, device_registry_id)
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS prevent_device_identity_update
+        BEFORE UPDATE ON devices
+        WHEN NEW.id IS NOT OLD.id
+          OR NEW.device_number IS NOT OLD.device_number
+          OR NEW.source_identifier IS NOT OLD.source_identifier
+        BEGIN SELECT RAISE(ABORT, 'device identity is immutable'); END
+    """)
 
 
 def _seed_default_admin():

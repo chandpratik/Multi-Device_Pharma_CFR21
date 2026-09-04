@@ -258,8 +258,9 @@ class RegulatedRecordService:
                     WHERE batch_id = ? AND device_id = ?
                 """, (batch_id, device_id)).fetchone()[0]
                 recipe_version_id = self._get_or_create_recipe(conn, actor, master_data)
-                device_registry_id = self._get_or_create_device(
-                    conn, actor, device_id, device_source or f"device-{device_id}")
+                device_registry_id = self._require_assigned_device(
+                    conn, batch_id, device_id,
+                    device_source or f"device-{device_id}")
                 scan_id, timestamp = str(uuid.uuid4()), _utc_now()
                 conn.execute("""
                     INSERT INTO scan_records
@@ -439,11 +440,41 @@ class RegulatedRecordService:
         return value_id
 
     @staticmethod
-    def _get_or_create_device(conn, actor: User, number: int, source: str) -> str:
-        row = conn.execute("SELECT id FROM devices WHERE device_number = ? AND source_identifier = ?", (number, source)).fetchone()
+    def _require_assigned_device(conn, batch_id: str, number: int, source: str) -> str:
+        """Resolve only a pre-approved immutable identity assigned to this batch."""
+        row = conn.execute("""
+            SELECT d.id
+            FROM devices d
+            JOIN batch_device_assignments a ON a.device_registry_id = d.id
+            WHERE a.batch_id = ?
+              AND d.device_number = ?
+              AND d.source_identifier = ?
+              AND d.approval_status = 'approved'
+              AND d.enabled = 1
+        """, (batch_id, number, source)).fetchone()
+        if row is None:
+            raise RegulatedRecordError(
+                "Scan rejected: device is unknown, unapproved, disabled, or not assigned to this batch.")
+        return row["id"]
+
+    @staticmethod
+    def _get_or_create_legacy_device(conn, actor: User, number: int, source: str) -> str:
+        """Attach imported historical evidence without authorizing live acquisition.
+
+        Legacy imports are classified separately and never pass through
+        ``_require_assigned_device``. Their registry identity remains pending,
+        so it cannot be reused by a current production scan without review.
+        """
+        row = conn.execute("""
+            SELECT id FROM devices WHERE device_number = ? AND source_identifier = ?
+        """, (number, source)).fetchone()
         if row:
             return row["id"]
         value_id = str(uuid.uuid4())
-        conn.execute("INSERT INTO devices (id, device_number, source_identifier, created_at, created_by) VALUES (?, ?, ?, ?, ?)",
-                     (value_id, number, source, _utc_now(), actor.username))
+        conn.execute("""
+            INSERT INTO devices (
+                id, device_number, source_identifier, display_name, created_at,
+                created_by, approval_status, enabled
+            ) VALUES (?, ?, ?, 'Legacy import device', ?, ?, 'pending', 0)
+        """, (value_id, number, source, _utc_now(), actor.username))
         return value_id

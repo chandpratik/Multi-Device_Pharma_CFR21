@@ -98,15 +98,15 @@ boundary established first.
 
 ## 6. Enforce device authorization
 
-- [ ] Extend the device registry with immutable identity, display name, approval
+- [x] Extend the device registry with immutable identity, display name, approval
   status, enabled status, approval/deactivation actor, timestamp, and reason.
 - [ ] Add controlled service operations to register, approve, deactivate, and
   replace devices; require the approved permissions and audit each action.
-- [ ] Add versioned batch-to-device assignments and prohibit assignment changes
+- [x] Add versioned batch-to-device assignments and prohibit assignment changes
   after the batch becomes active.
-- [ ] Remove automatic device creation from the scan path; an unknown or
+- [x] Remove automatic device creation from the scan path; an unknown or
   unapproved device must fail closed.
-- [ ] In the same transaction as each scan insert, verify the device is enabled,
+- [x] In the same transaction as each scan insert, verify the device is enabled,
   approved, assigned to that batch, and matches the expected serial/source.
 - [ ] Stop or quarantine acquisition safely if a device becomes unauthorized or
   its identity changes during a batch, and create an actionable audit event.
