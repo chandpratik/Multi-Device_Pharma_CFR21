@@ -65,7 +65,7 @@ from typing import Generator
 log = logging.getLogger("pharma.cfr21.db")
 
 # ── Schema version — bump this when adding columns or tables ──────────────────
-_SCHEMA_VERSION = 7
+_SCHEMA_VERSION = 8
 
 
 # ── Database path ─────────────────────────────────────────────────────────────
@@ -241,6 +241,28 @@ def initialise():
             )
         """)
 
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                session_id         TEXT PRIMARY KEY,
+                user_id            INTEGER NOT NULL REFERENCES users(id),
+                username           TEXT NOT NULL,
+                role_at_login      TEXT NOT NULL,
+                login_time         TEXT NOT NULL,
+                last_activity      TEXT NOT NULL,
+                state              TEXT NOT NULL
+                                   CHECK(state IN (
+                                       'active',
+                                       'locked',
+                                       'expired',
+                                       'logged_out'
+                                   )),
+                lock_time          TEXT,
+                expiry_time        TEXT NOT NULL,
+                workstation        TEXT NOT NULL,
+                termination_reason TEXT
+            )
+        """)
+
         # ── indexes for fast lookups ──────────────────────────────────────────
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_audit_timestamp
@@ -257,6 +279,10 @@ def initialise():
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_integrity_batch
             ON file_integrity(batch_id, device_id)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_user_sessions_user_state
+            ON user_sessions(user_id, state)
         """)
 
         log.info("Database tables verified/created.")
@@ -348,7 +374,13 @@ def _migrate():
         if current < 7:
             _migrate_v7_recovery_and_legacy_import(conn)
             conn.execute("UPDATE schema_version SET version = 7")
+            current = 7
             log.info("Schema migrated to version 7 - recovery and legacy import controls")
+
+        if current < 8:
+            _migrate_v8_authoritative_sessions(conn)
+            conn.execute("UPDATE schema_version SET version = 8")
+            log.info("Schema migrated to version 8 - authoritative sessions")
 
 
 def _migrate_v4_authoritative_records(conn):
@@ -505,6 +537,35 @@ def _migrate_v7_recovery_and_legacy_import(conn):
         CREATE UNIQUE INDEX IF NOT EXISTS idx_scan_records_delivery_id
         ON scan_records(batch_id, device_id, delivery_id)
         WHERE delivery_id IS NOT NULL
+    """)
+
+
+def _migrate_v8_authoritative_sessions(conn):
+    """Persist issued sessions so backend services can reject revoked authority."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_sessions (
+            session_id         TEXT PRIMARY KEY,
+            user_id            INTEGER NOT NULL REFERENCES users(id),
+            username           TEXT NOT NULL,
+            role_at_login      TEXT NOT NULL,
+            login_time         TEXT NOT NULL,
+            last_activity      TEXT NOT NULL,
+            state              TEXT NOT NULL
+                               CHECK(state IN (
+                                   'active',
+                                   'locked',
+                                   'expired',
+                                   'logged_out'
+                               )),
+            lock_time          TEXT,
+            expiry_time        TEXT NOT NULL,
+            workstation        TEXT NOT NULL,
+            termination_reason TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_user_sessions_user_state
+        ON user_sessions(user_id, state)
     """)
 
 

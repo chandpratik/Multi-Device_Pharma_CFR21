@@ -31,18 +31,38 @@ class TestSessionManager:
     def test_logout_clears_session(self, operator_user):
         sm = SessionManager()
         sm.login("operator1", "Operator@123")
+        session_id = sm.session_id
         sm.logout()
         assert not sm.is_logged_in
         assert sm.session_id == ""
+        with db.get_conn_ctx() as conn:
+            row = conn.execute(
+                "SELECT state FROM user_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        assert row["state"] == "logged_out"
 
     def test_lock_and_unlock(self, operator_user):
         sm = SessionManager()
         sm.login("operator1", "Operator@123")
+        session_id = sm.session_id
         sm.lock_screen()
         assert sm.is_locked
+        with db.get_conn_ctx() as conn:
+            row = conn.execute(
+                "SELECT state FROM user_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        assert row["state"] == "locked"
         ok, msg = sm.unlock_screen("Operator@123")
         assert ok, msg
         assert not sm.is_locked
+        with db.get_conn_ctx() as conn:
+            row = conn.execute(
+                "SELECT state FROM user_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        assert row["state"] == "active"
 
     def test_unlock_wrong_password_fails(self, operator_user):
         sm = SessionManager()
@@ -157,7 +177,7 @@ class TestDatabase:
         with db.get_conn_ctx() as conn:
             v = conn.execute("SELECT version FROM schema_version"
                              ).fetchone()["version"]
-        assert v == 7
+        assert v == 8
 
     def test_audit_table_has_hash_columns(self, fresh_db):
         with db.get_conn_ctx() as conn:
@@ -172,3 +192,10 @@ class TestDatabase:
                 "SELECT name FROM sqlite_master WHERE type='index' "
                 "AND name='idx_integrity_unique_seal'").fetchone()
         assert idx is not None
+
+    def test_user_sessions_table_exists(self, fresh_db):
+        with db.get_conn_ctx() as conn:
+            table = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name='user_sessions'").fetchone()
+        assert table is not None

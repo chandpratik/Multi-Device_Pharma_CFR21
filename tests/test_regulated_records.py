@@ -11,6 +11,7 @@ from core.models import SessionInfo
 import threading
 from datetime import datetime, timedelta, timezone
 from cfr21.regulated_records import RegulatedRecordError, RegulatedRecordService
+from cfr21.session_manager import SessionManager
 
 
 def test_batch_and_scan_are_committed_with_audit(admin_user):
@@ -190,6 +191,69 @@ def test_locked_user_is_rejected_at_backend_boundary(admin_user):
         pass
     else:
         raise AssertionError("Locked actor was accepted by backend")
+
+
+def test_logged_out_session_is_rejected_at_backend_boundary(operator_user):
+    sm = SessionManager()
+    result = sm.login("operator1", "Operator@123")
+    assert result.success
+    user = sm.current_user
+    session_id = sm.session_id
+    sm.logout()
+    service = RegulatedRecordService()
+    try:
+        service.start_or_resume_batch(user, "BATCH-SESSION-1", "operator1", "Tablet", {}, session_id)
+    except RegulatedRecordError:
+        pass
+    else:
+        raise AssertionError("Logged-out session was accepted by backend")
+
+
+def test_locked_session_is_rejected_at_backend_boundary(operator_user):
+    sm = SessionManager()
+    result = sm.login("operator1", "Operator@123")
+    assert result.success
+    sm.lock_screen()
+    service = RegulatedRecordService()
+    try:
+        service.start_or_resume_batch(
+            sm.current_user, "BATCH-SESSION-2", "operator1", "Tablet", {}, sm.session_id)
+    except RegulatedRecordError:
+        pass
+    else:
+        raise AssertionError("Locked session was accepted by backend")
+
+
+def test_expired_session_is_rejected_at_backend_boundary(operator_user):
+    sm = SessionManager()
+    result = sm.login("operator1", "Operator@123")
+    assert result.success
+    with db.get_conn_ctx() as conn:
+        conn.execute("""
+            UPDATE user_sessions SET expiry_time = ?
+            WHERE session_id = ?
+        """, (
+            (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(timespec="seconds"),
+            sm.session_id,
+        ))
+    service = RegulatedRecordService()
+    try:
+        service.start_or_resume_batch(
+            sm.current_user, "BATCH-SESSION-3", "operator1", "Tablet", {}, sm.session_id)
+    except RegulatedRecordError:
+        pass
+    else:
+        raise AssertionError("Expired session was accepted by backend")
+
+
+def test_unknown_session_id_is_rejected_at_backend_boundary(admin_user):
+    service = RegulatedRecordService()
+    try:
+        service.start_or_resume_batch(admin_user, "BATCH-SESSION-4", "admin", "Tablet", {}, "not-issued")
+    except RegulatedRecordError:
+        pass
+    else:
+        raise AssertionError("Unknown session ID was accepted by backend")
 
 
 def test_pdf_export_uses_authoritative_records_not_wal(admin_user, tmp_path):

@@ -11,6 +11,7 @@
 import os
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -20,6 +21,27 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import cfr21.db as db
 import cfr21.user_manager as um
 import cfr21.audit_trail as audit
+
+
+def issue_test_session(user, session_id):
+    """Create an issued active backend session for direct service tests."""
+    now = datetime.now(timezone.utc)
+    with db.get_conn_ctx() as conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO user_sessions
+                (session_id, user_id, username, role_at_login, login_time,
+                 last_activity, state, lock_time, expiry_time, workstation,
+                 termination_reason)
+            VALUES (?, ?, ?, ?, ?, ?, 'active', NULL, ?, 'pytest', NULL)
+        """, (
+            session_id,
+            user.id,
+            user.username,
+            user.role,
+            now.isoformat(timespec="seconds"),
+            now.isoformat(timespec="seconds"),
+            (now + timedelta(minutes=30)).isoformat(timespec="seconds"),
+        ))
 
 
 @pytest.fixture()
@@ -61,6 +83,12 @@ def admin_user(fresh_db):
         )
     result = um.authenticate("admin", pw)
     assert result.success, f"admin fixture login failed: {result.error_code}"
+    for session_id in [
+        "s-1", "s-2", "s-3", "s-4", "s-5", "s-6", "s-7",
+        "s-8", "s-9", "s-10", "s-11", "s-13", "s-14",
+        "s-old", "s-new", "legacy-session",
+    ]:
+        issue_test_session(result.user, session_id)
     return result.user
 
 
@@ -76,4 +104,5 @@ def operator_user(fresh_db, admin_user):
             "UPDATE users SET must_change_pw = 0 WHERE username = 'operator1'")
     result = um.authenticate("operator1", "Operator@123")
     assert result.success
+    issue_test_session(result.user, "s-12")
     return result.user

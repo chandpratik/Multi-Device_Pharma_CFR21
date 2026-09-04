@@ -74,7 +74,8 @@ _PERMISSIONS: dict[str, set[str]] = {
         "change_own_password",
         "deactivate_product",
         "recover_batches",
-        "connect_camera", "connect_plc",
+        "connect_camera", "disconnect_camera", "connect_plc", "disconnect_plc",
+        "close_batch",
     },
     ROLE_SUPERVISOR: {
         "login",
@@ -84,7 +85,8 @@ _PERMISSIONS: dict[str, set[str]] = {
         "export_reports",
         "change_own_password",
         "deactivate_product",
-        "connect_camera", "connect_plc",
+        "connect_camera", "disconnect_camera", "connect_plc", "disconnect_plc",
+        "close_batch",
     },
     ROLE_OPERATOR: {
         "login",
@@ -92,7 +94,8 @@ _PERMISSIONS: dict[str, set[str]] = {
         "set_master_code", "clear_master_code",
         "view_live",
         "change_own_password",
-        "connect_camera", "connect_plc",
+        "connect_camera", "disconnect_camera", "connect_plc", "disconnect_plc",
+        "close_batch",
     },
     ROLE_QA: {
         "login",
@@ -261,6 +264,12 @@ def authenticate(username: str, password: str,
                         "Account '%s' locked until %s after %s failed attempts.",
                         username, locked_until_iso, new_attempts
                     )
+                    conn.execute("""
+                        UPDATE user_sessions
+                        SET state = 'locked',
+                            termination_reason = 'Account locked'
+                        WHERE user_id = ? AND state = 'active'
+                    """, (user.id,))
 
                 conn.execute("""
                     UPDATE users
@@ -552,13 +561,28 @@ def deactivate_user(admin_user: User, target_username: str) -> tuple[bool, str]:
 
     try:
         with get_conn_ctx() as conn:
+            row = conn.execute(
+                "SELECT id FROM users WHERE username = ? COLLATE NOCASE",
+                (target_username,)
+            ).fetchone()
+
+            if row is None:
+                return False, f"User '{target_username}' not found."
+
             result = conn.execute("""
                 UPDATE users SET is_active = 0
-                WHERE username = ? COLLATE NOCASE
-            """, (target_username,))
+                WHERE id = ?
+            """, (row["id"],))
 
             if result.rowcount == 0:
                 return False, f"User '{target_username}' not found."
+
+            conn.execute("""
+                UPDATE user_sessions
+                SET state = 'logged_out',
+                    termination_reason = 'Account deactivated'
+                WHERE user_id = ? AND state = 'active'
+            """, (row["id"],))
 
             log.info("User '%s' deactivated by '%s'",
                      target_username, admin_user.username)

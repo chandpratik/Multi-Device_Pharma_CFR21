@@ -32,6 +32,12 @@ from cfr21.user_manager import (
     User, AuthResult, authenticate, get_workstation
 )
 import cfr21.audit_trail as audit
+from cfr21.authorization import (
+    SESSION_ACTIVE,
+    SESSION_LOCKED,
+    SESSION_LOGGED_OUT,
+)
+from cfr21.db import get_conn_ctx
 
 log = logging.getLogger("pharma.cfr21.session")
 
@@ -163,6 +169,7 @@ class SessionManager:
             self._login_time    = datetime.now(timezone.utc)
             self._last_activity = self._login_time
             self._is_locked     = False
+            self._persist_session_start()
 
             audit.log(
                 user       = result.user,
@@ -226,6 +233,7 @@ class SessionManager:
         )
         log.info("Session ended: %s — session_id=%s",
                  self._current_user.username, self._session_id)
+        self._set_session_state(SESSION_LOGGED_OUT, reason)
 
         self._current_user  = None
         self._session_id    = ""
@@ -252,6 +260,7 @@ class SessionManager:
             return
 
         self._is_locked = True
+        self._set_session_state(SESSION_LOCKED, "Screen locked due to inactivity")
 
         audit.log(
             user       = self._current_user,
@@ -319,6 +328,7 @@ class SessionManager:
 
         # Success
         self._is_locked = False
+        self._set_session_state(SESSION_ACTIVE, None)
         self.ping()
         audit.log(
             user       = self._current_user,
@@ -340,6 +350,7 @@ class SessionManager:
         """
         if self._current_user and not self._is_locked:
             self._last_activity = datetime.now(timezone.utc)
+            self._touch_session()
 
     def is_timed_out(self) -> bool:
         """
@@ -426,6 +437,62 @@ class SessionManager:
         h, rem = divmod(total_seconds, 3600)
         m, s   = divmod(rem, 60)
         return f"{h:02d}h {m:02d}m {s:02d}s"
+
+    def _session_expiry_time(self) -> datetime:
+        base = self._last_activity or datetime.now(timezone.utc)
+        return base + timedelta(minutes=self.timeout_minutes)
+
+    def _persist_session_start(self) -> None:
+        if not self._current_user or not self._session_id or not self._login_time:
+            return
+        now_iso = self._login_time.isoformat(timespec="seconds")
+        expiry_iso = self._session_expiry_time().isoformat(timespec="seconds")
+        with get_conn_ctx() as conn:
+            conn.execute("""
+                INSERT INTO user_sessions
+                    (session_id, user_id, username, role_at_login, login_time,
+                     last_activity, state, lock_time, expiry_time, workstation,
+                     termination_reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
+            """, (
+                self._session_id,
+                self._current_user.id,
+                self._current_user.username,
+                self._current_user.role,
+                now_iso,
+                now_iso,
+                SESSION_ACTIVE,
+                expiry_iso,
+                get_workstation(),
+            ))
+
+    def _touch_session(self) -> None:
+        if not self._session_id or not self._last_activity:
+            return
+        last_iso = self._last_activity.isoformat(timespec="seconds")
+        expiry_iso = self._session_expiry_time().isoformat(timespec="seconds")
+        with get_conn_ctx() as conn:
+            conn.execute("""
+                UPDATE user_sessions
+                SET last_activity = ?, expiry_time = ?
+                WHERE session_id = ? AND state = ?
+            """, (last_iso, expiry_iso, self._session_id, SESSION_ACTIVE))
+
+    def _set_session_state(self, state: str, reason: Optional[str]) -> None:
+        if not self._session_id:
+            return
+        lock_time = (
+            datetime.now(timezone.utc).isoformat(timespec="seconds")
+            if state == SESSION_LOCKED else None
+        )
+        with get_conn_ctx() as conn:
+            conn.execute("""
+                UPDATE user_sessions
+                SET state = ?,
+                    lock_time = CASE WHEN ? IS NULL THEN lock_time ELSE ? END,
+                    termination_reason = ?
+                WHERE session_id = ?
+            """, (state, lock_time, lock_time, reason, self._session_id))
 
     def session_info_str(self) -> str:
         """Short string for display in the topbar: 'johndoe (Operator)'"""

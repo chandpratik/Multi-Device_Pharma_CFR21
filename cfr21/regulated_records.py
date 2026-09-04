@@ -7,9 +7,14 @@ from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from cfr21.authorization import (
+    AuthorizationError,
+    SessionContext,
+    authorize_session,
+)
 from cfr21.audit_trail import _compute_record_hash
 from cfr21.db import get_conn
-from cfr21.user_manager import User, get_user, get_workstation
+from cfr21.user_manager import User, get_workstation
 
 STATE_ACTIVE = "active"
 STATE_STOPPED = "stopped"
@@ -32,16 +37,11 @@ def _actor_name(actor: Optional[User]) -> str:
 
 def _require_actor(actor: Optional[User], permission: str, session_id: str) -> User:
     """Reject forged/stale subjects and unauthorised backend write attempts."""
-    _actor_name(actor)
-    if not session_id:
-        raise RegulatedRecordError("An authenticated session is required.")
-    current = get_user(actor.username)
-    if (current is None or current.id != actor.id or not current.is_active
-            or current.is_locked()):
-        raise RegulatedRecordError("The authenticated account is no longer active.")
-    if not current.can(permission):
-        raise RegulatedRecordError("The authenticated role lacks required authority.")
-    return current
+    context = SessionContext.from_user(actor, session_id)
+    try:
+        return authorize_session(context, permission)
+    except AuthorizationError as exc:
+        raise RegulatedRecordError("Protected operation denied.") from exc
 
 
 def _snapshot(value: Any) -> str:
@@ -278,7 +278,7 @@ class RegulatedRecordService:
 
     def close_batch(self, actor: User, batch_id: str, session_id: str = "") -> None:
         """Mark a stopped batch closed only after any required reconciliation."""
-        actor = _require_actor(actor, "stop_logging", session_id)
+        actor = _require_actor(actor, "close_batch", session_id)
         with _WRITE_LOCK:
             conn = get_conn()
             try:
