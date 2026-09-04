@@ -300,6 +300,11 @@ class AppController:
     def is_running(self) -> bool:
         return any(l.is_running() for l in self._loggers.values())
 
+    @property
+    def stopped_batch_id(self) -> str:
+        """Batch awaiting review/release and final file closure."""
+        return self._stopped_batch_id
+
     # ── teach ─────────────────────────────────────────────────────────────────
 
     def arm_teach(self, device_id: int):

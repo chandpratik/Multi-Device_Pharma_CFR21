@@ -1734,6 +1734,25 @@ class MainWindow(QMainWindow):
             self._sm.ping()
 
         # ── Progress dialog while Excel is built and files are sealed ─────────
+        batch_id = self._controller.stopped_batch_id
+        if batch_id:
+            review_reason = ReasonDialog("Review Batch", "State the batch review reason.", self)
+            if review_reason.exec() != ReasonDialog.DialogCode.Accepted:
+                return
+            try:
+                self._controller.review_batch(batch_id, review_reason.reason)
+            except Exception as exc:
+                QMessageBox.critical(self, "Review Blocked", str(exc))
+                return
+            release_reason = ReasonDialog("Release Batch", "State the batch release reason.", self)
+            if release_reason.exec() != ReasonDialog.DialogCode.Accepted:
+                return
+            try:
+                self._controller.release_batch(batch_id, release_reason.reason)
+            except Exception as exc:
+                QMessageBox.critical(self, "Release Blocked", str(exc))
+                return
+
         from PyQt6.QtWidgets import QProgressDialog
         from PyQt6.QtCore import QThread, pyqtSignal as _Signal
 
