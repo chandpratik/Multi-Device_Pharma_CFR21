@@ -26,6 +26,18 @@ class DeviceRegistryService:
         return authorize_session(
             SessionContext.from_user(actor, session_id), permission, target=target)
 
+    def list_devices(self, actor: User, session_id: str) -> list[dict]:
+        """Return registry status only to a currently authorized administrator."""
+        self._authorize(actor, session_id, "manage_devices", "device-registry")
+        with get_conn_ctx() as conn:
+            rows = conn.execute("""
+                SELECT id, device_number, source_identifier, display_name,
+                       approval_status, enabled, created_at, created_by,
+                       approved_at, approved_by, deactivated_at, deactivated_by
+                FROM devices ORDER BY device_number, source_identifier
+            """).fetchall()
+        return [dict(row) for row in rows]
+
     def register_device(self, actor: User, session_id: str, device_number: int,
                         source_identifier: str, display_name: str,
                         reason: str) -> str:
@@ -172,6 +184,10 @@ class DeviceRegistryService:
 
 
 _SERVICE = DeviceRegistryService()
+
+
+def list_devices(actor: User, session_id: str) -> list[dict]:
+    return _SERVICE.list_devices(actor, session_id)
 
 
 def register_device(actor: User, session_id: str, device_number: int,
