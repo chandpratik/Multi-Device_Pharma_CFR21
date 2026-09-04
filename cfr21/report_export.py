@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from typing import Optional
 import functools
 
+from cfr21.authorization import AuthorizationError, SessionContext, authorize_session
 from cfr21.user_manager import User
 from cfr21.regulated_records import RegulatedRecordService
 import cfr21.audit_trail as audit
@@ -177,6 +178,7 @@ def _get_styles():
 @_require_reportlab
 def export_audit_trail(output_path: str,
                        generated_by: User,
+                       session_id: str = "",
                        username_filter: Optional[str] = None,
                        action_filter:   Optional[str] = None,
                        date_from:       Optional[datetime] = None,
@@ -199,6 +201,15 @@ def export_audit_trail(output_path: str,
     Returns (True, "") on success, (False, error_message) on failure.
     """
     try:
+        try:
+            generated_by = authorize_session(
+                SessionContext.from_user(generated_by, session_id),
+                "export_reports",
+                target="audit_trail",
+            )
+        except AuthorizationError:
+            return False, "You are not authorized to export audit records."
+
         records = audit.get_records(
             limit          = limit,
             username_filter= username_filter,
@@ -319,6 +330,7 @@ def export_audit_trail(output_path: str,
             action = audit.ACTION_REPORT_EXPORTED,
             detail = f"Audit Trail PDF exported: {os.path.basename(output_path)} "
                      f"({len(records)} records)",
+            session_id = session_id,
         )
 
         log.info("Audit trail PDF exported: %s (%s records)",
@@ -337,6 +349,7 @@ def export_batch_record(output_path: str,
                         generated_by: User,
                         batch_id: str,
                         device_id: int,
+                        session_id: str = "",
                         wal_path: str = "",
                         product_name: str = "",
                         operator_id: str  = "",
@@ -356,6 +369,15 @@ def export_batch_record(output_path: str,
     Returns (True, "") on success, (False, error_message) on failure.
     """
     try:
+        try:
+            generated_by = authorize_session(
+                SessionContext.from_user(generated_by, session_id),
+                "export_reports",
+                target=f"batch:{batch_id}:device:{device_id}",
+            )
+        except AuthorizationError:
+            return False, "You are not authorized to export batch records."
+
         authoritative_batch, scan_rows = RegulatedRecordService().get_batch_record(
             batch_id, device_id)
         product_name = authoritative_batch["product_name"]
@@ -599,6 +621,7 @@ def export_batch_record(output_path: str,
             action = audit.ACTION_REPORT_EXPORTED,
             detail = (f"Batch Record PDF exported for batch '{batch_id}' "
                       f"Device {device_id}: {os.path.basename(output_path)}"),
+            session_id = session_id,
         )
 
         log.info("Batch record PDF exported: %s", output_path)

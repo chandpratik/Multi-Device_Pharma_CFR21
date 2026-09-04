@@ -21,7 +21,10 @@ import logging
 from datetime import datetime
 from typing import Optional
 
+import cfr21.audit_trail as audit
+from cfr21.authorization import AuthorizationError, SessionContext, authorize_session
 from cfr21.db import _db_path
+from cfr21.user_manager import User
 
 log = logging.getLogger("pharma.cfr21.backup")
 
@@ -130,6 +133,29 @@ def run_backup(log_dir: str, custom_dest: str = "") -> tuple[bool, str]:
             except Exception:
                 pass
         return False, f"Backup failed: {e}"
+
+
+def run_backup_authorized(actor: User, session_id: str, log_dir: str,
+                          custom_dest: str = "") -> tuple[bool, str]:
+    """Manual backup boundary; scheduled backups may still call run_backup()."""
+    try:
+        actor = authorize_session(
+            SessionContext.from_user(actor, session_id),
+            "backup_database",
+            target=custom_dest or log_dir,
+        )
+    except AuthorizationError:
+        return False, "You are not authorized to create database backups."
+
+    ok, result = run_backup(log_dir, custom_dest)
+    if ok:
+        audit.log(
+            user=actor,
+            action=audit.ACTION_BACKUP_CREATED,
+            detail=f"Manual compliance database backup created: {result}",
+            session_id=session_id,
+        )
+    return ok, result
 
 
 def _prune_old_backups(backup_dir: str):

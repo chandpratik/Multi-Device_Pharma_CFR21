@@ -15,20 +15,23 @@ from cfr21.authorization import AuthorizationError, SessionContext, authorize_se
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _literal_permissions_from_calls(relative_path: str, function_names: set[str]) -> set[str]:
+def _literal_permissions_from_calls(relative_path: str, arg_indexes: dict[str, int]) -> set[str]:
     tree = ast.parse((ROOT / relative_path).read_text(encoding="utf-8"))
     permissions: set[str] = set()
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not node.args:
+        if not isinstance(node, ast.Call):
             continue
         func_name = ""
         if isinstance(node.func, ast.Name):
             func_name = node.func.id
         elif isinstance(node.func, ast.Attribute):
             func_name = node.func.attr
-        if func_name in function_names and isinstance(node.args[0], ast.Constant):
-            if isinstance(node.args[0].value, str):
-                permissions.add(node.args[0].value)
+        arg_index = arg_indexes.get(func_name)
+        if arg_index is None or len(node.args) <= arg_index:
+            continue
+        arg = node.args[arg_index]
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            permissions.add(arg.value)
     return permissions
 
 
@@ -48,11 +51,17 @@ def test_every_role_has_explicit_matrix_entry():
 def test_backend_permission_checks_are_in_matrix():
     discovered = set()
     discovered |= _literal_permissions_from_calls(
-        "core/app_controller.py", {"_require_permission"})
+        "core/app_controller.py", {"_require_permission": 0})
     discovered |= _literal_permissions_from_calls(
-        "cfr21/regulated_records.py", {"_require_actor"})
+        "cfr21/regulated_records.py", {"_require_actor": 1})
     discovered |= _literal_permissions_from_calls(
-        "cfr21/legacy_wal_import.py", {"_require_actor"})
+        "cfr21/legacy_wal_import.py", {"_require_actor": 1})
+    discovered |= _literal_permissions_from_calls(
+        "cfr21/report_export.py", {"authorize_session": 1})
+    discovered |= _literal_permissions_from_calls(
+        "cfr21/db_backup.py", {"authorize_session": 1})
+    discovered |= _literal_permissions_from_calls(
+        "cfr21/user_admin_service.py", {"authorize_session": 1})
 
     assert discovered <= PROTECTED_OPERATIONS
 

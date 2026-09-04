@@ -265,7 +265,8 @@ def test_pdf_export_uses_authoritative_records_not_wal(admin_user, tmp_path):
     service.record_scan(admin_user, batch_id, 1, "B", "A", "FAIL", "admin", "Tablet", "s-14")
     service.stop_batch(admin_user, batch_id, "s-14")
     output = tmp_path / "batch.pdf"
-    ok, message = report_export.export_batch_record(str(output), admin_user, "BATCH-113", 1)
+    ok, message = report_export.export_batch_record(
+        str(output), admin_user, "BATCH-113", 1, session_id="s-14")
     assert ok, message
     assert output.exists() and output.stat().st_size > 0
     _, scans = service.get_batch_record("BATCH-113", 1)

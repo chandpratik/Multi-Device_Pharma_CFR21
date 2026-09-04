@@ -681,14 +681,16 @@ class AdvancedSettingsPage(QStackedWidget):
 
     def _run_backup_now(self):
         """Manually trigger a compliance DB backup."""
-        from cfr21.db_backup import run_backup
+        from cfr21.db_backup import run_backup_authorized
         log_dir = self._inputs.get("log_dir", None)
         if not log_dir:
             QMessageBox.warning(self.parentWidget(), "No Log Directory",
                                 "Please set the log directory first.")
             return
         custom_dest = self._inputs.get("backup_destination", None)
-        ok, result = run_backup(
+        ok, result = run_backup_authorized(
+            self._sm.current_user if self._sm else None,
+            self._sm.session_id if self._sm else "",
             log_dir.text().strip(),
             custom_dest.text().strip() if custom_dest else "",
         )

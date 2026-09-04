@@ -575,6 +575,7 @@ class AuditTrailPage(QWidget):
         ok, msg = report_export.export_audit_trail(
             output_path    = path,
             generated_by   = self._sm.current_user,
+            session_id     = self._sm.session_id,
             username_filter= username,
             action_filter  = action,
             date_from      = date_from,
@@ -1113,6 +1114,7 @@ class FileIntegrityPage(QWidget):
             generated_by = self._sm.current_user,
             batch_id     = batch_id,
             device_id    = device_id,
+            session_id   = self._sm.session_id,
             company_name    = self._config.company.name    if self._config else "",
             company_address = self._config.company.address if self._config else "",
         )
