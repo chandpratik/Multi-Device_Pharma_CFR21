@@ -18,11 +18,33 @@ from cfr21.user_manager import User, get_workstation
 
 STATE_ACTIVE = "active"
 STATE_STOPPED = "stopped"
+STATE_RECONCILIATION_PENDING = "reconciliation_pending"
+STATE_RECONCILED = "reconciled"
+STATE_REVIEWED = "reviewed"
+STATE_RELEASED = "released"
+STATE_CLOSED = "closed"
 _WRITE_LOCK = threading.RLock()
+
+# Recovery is deliberately distinct from reconciliation. Evidence may be
+# completed without immediately returning a batch to data acquisition.
+_TRANSITION_PERMISSIONS = {
+    ("configured", STATE_ACTIVE): "start_logging",
+    (STATE_RECONCILED, STATE_ACTIVE): "recover_batches",
+    (STATE_ACTIVE, STATE_STOPPED): "stop_logging",
+    (STATE_RECONCILIATION_PENDING, STATE_RECONCILED): "reconcile_batches",
+    (STATE_STOPPED, STATE_REVIEWED): "review_batches",
+    (STATE_RECONCILED, STATE_REVIEWED): "review_batches",
+    (STATE_REVIEWED, STATE_RELEASED): "release_batches",
+    (STATE_RELEASED, STATE_CLOSED): "close_batch",
+}
 
 
 class RegulatedRecordError(RuntimeError):
     """A regulated record could not be committed safely."""
+
+
+class StaleBatchStateError(RegulatedRecordError):
+    """The batch changed after the caller read its expected version."""
 
 
 def _utc_now() -> str:
@@ -71,6 +93,81 @@ def _append_audit(conn, actor: User, action: str, detail: str, session_id: str) 
 class RegulatedRecordService:
     """Authoritative write boundary for batches and immutable scan records."""
 
+    def transition_batch(self, actor: User, batch_id: str, new_state: str,
+                         expected_version: int, session_id: str = "",
+                         reason: str = "") -> int:
+        """Apply one authorised lifecycle transition with optimistic locking.
+
+        A caller must provide the version it observed. Competing transition
+        attempts therefore have one winner and one clear stale-state failure.
+        """
+        if expected_version < 1:
+            raise RegulatedRecordError("A positive expected batch version is required.")
+        conn = get_conn()
+        try:
+            observed = conn.execute("""
+                SELECT state FROM regulated_batches WHERE id = ?
+            """, (batch_id,)).fetchone()
+        finally:
+            conn.close()
+        if observed is None:
+            raise RegulatedRecordError("Authoritative batch was not found.")
+        permission = _TRANSITION_PERMISSIONS.get((observed["state"], new_state))
+        if permission is None:
+            raise RegulatedRecordError(
+                f"Batch transition '{observed['state']}' to '{new_state}' is not permitted.")
+        # Validate the session before taking the batch write lock. Authorisation
+        # refreshes session activity in SQLite, so doing it while holding the
+        # batch transaction would self-deadlock on a separate connection.
+        actor = _require_actor(actor, permission, session_id)
+        with _WRITE_LOCK:
+            conn = get_conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                batch = conn.execute("""
+                    SELECT external_batch_id, state, version FROM regulated_batches WHERE id = ?
+                """, (batch_id,)).fetchone()
+                if batch is None:
+                    raise RegulatedRecordError("Authoritative batch was not found.")
+                self._transition_locked(conn, actor, batch_id, batch, new_state,
+                                        expected_version, session_id, reason)
+                conn.commit()
+                return expected_version + 1
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+    @staticmethod
+    def _transition_locked(conn, actor: User, batch_id: str, batch: Any,
+                           new_state: str, expected_version: int,
+                           session_id: str, reason: str = "") -> None:
+        if batch["version"] != expected_version:
+            raise StaleBatchStateError("Batch state is stale; reload before retrying.")
+        if new_state == STATE_STOPPED:
+            cursor = conn.execute("""
+                UPDATE regulated_batches
+                SET state = ?, version = version + 1, stopped_at = ?, stopped_by = ?
+                WHERE id = ? AND state = ? AND version = ?
+            """, (new_state, _utc_now(), actor.username, batch_id,
+                  batch["state"], expected_version))
+        else:
+            cursor = conn.execute("""
+                UPDATE regulated_batches
+                SET state = ?, version = version + 1
+                WHERE id = ? AND state = ? AND version = ?
+            """, (new_state, batch_id, batch["state"], expected_version))
+        if cursor.rowcount != 1:
+            raise StaleBatchStateError("Batch changed concurrently; reload before retrying.")
+        detail = (
+            f"Authoritative batch '{batch['external_batch_id']}' transitioned "
+            f"from '{batch['state']}' to '{new_state}'; version={expected_version + 1}."
+        )
+        if reason.strip():
+            detail += f" Reason: {reason.strip()}."
+        _append_audit(conn, actor, "AUTHORITATIVE_BATCH_TRANSITION", detail, session_id)
+
     def start_or_resume_batch(self, actor: User, external_batch_id: str,
                               operator_id: str, product_name: str,
                               configuration: Any, session_id: str = "") -> str:
@@ -113,6 +210,20 @@ class RegulatedRecordService:
                 raise
             finally:
                 conn.close()
+
+    def get_batch_status(self, batch_id: str) -> dict:
+        """Return lifecycle state and version for a UI/service transition request."""
+        conn = get_conn()
+        try:
+            row = conn.execute("""
+                SELECT id, external_batch_id, state, version
+                FROM regulated_batches WHERE id = ?
+            """, (batch_id,)).fetchone()
+            if row is None:
+                raise RegulatedRecordError("Authoritative batch was not found.")
+            return dict(row)
+        finally:
+            conn.close()
 
     def record_scan(self, actor: User, batch_id: str, device_id: int,
                     raw_data: str, master_data: str, status: str,
@@ -172,29 +283,10 @@ class RegulatedRecordService:
                 conn.close()
 
     def stop_batch(self, actor: User, batch_id: str, session_id: str = "") -> None:
-        actor = _require_actor(actor, "stop_logging", session_id)
-        with _WRITE_LOCK:
-            conn = get_conn()
-            try:
-                conn.execute("BEGIN IMMEDIATE")
-                batch = conn.execute("SELECT external_batch_id, state FROM regulated_batches WHERE id = ?", (batch_id,)).fetchone()
-                if batch is None:
-                    raise RegulatedRecordError("Authoritative batch was not found.")
-                if batch["state"] == STATE_STOPPED:
-                    conn.commit()
-                    return
-                if batch["state"] != STATE_ACTIVE:
-                    raise RegulatedRecordError("Only an active batch may be stopped.")
-                conn.execute("UPDATE regulated_batches SET state = ?, stopped_at = ?, stopped_by = ? WHERE id = ?",
-                             (STATE_STOPPED, _utc_now(), _actor_name(actor), batch_id))
-                _append_audit(conn, actor, "AUTHORITATIVE_BATCH_STOPPED",
-                              f"Authoritative batch '{batch['external_batch_id']}' stopped: id={batch_id}.", session_id)
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-            finally:
-                conn.close()
+        status = self.get_batch_status(batch_id)
+        if status["state"] == STATE_STOPPED:
+            return
+        self.transition_batch(actor, batch_id, STATE_STOPPED, status["version"], session_id)
 
     def detect_interrupted_batches(self) -> list[dict]:
         """Mark batches left active at a prior process termination as pending.
@@ -210,8 +302,10 @@ class RegulatedRecordService:
                                     (STATE_ACTIVE,)).fetchall()
                 now = _utc_now()
                 for row in rows:
-                    conn.execute("UPDATE regulated_batches SET state = 'reconciliation_pending' WHERE id = ?",
-                                 (row["id"],))
+                    conn.execute("""UPDATE regulated_batches
+                        SET state = ?, version = version + 1
+                        WHERE id = ? AND state = ?""",
+                                 (STATE_RECONCILIATION_PENDING, row["id"], STATE_ACTIVE))
                     conn.execute("""INSERT OR IGNORE INTO batch_reconciliations
                         (id, batch_id, detected_at, detected_by, status, device_summary_json)
                         VALUES (?, ?, ?, 'system-startup', 'pending', '{}')""",
@@ -238,10 +332,12 @@ class RegulatedRecordService:
 
     def reconcile_and_resume_batch(self, actor: User, external_batch_id: str,
                                    reason: str, session_id: str = "") -> tuple[str, dict]:
-        """Record an authorized recovery decision and reopen one interrupted batch."""
-        actor = _require_actor(actor, "recover_batches", session_id)
+        """Compatibility recovery flow: reconcile evidence, then explicitly resume."""
         if not reason or not reason.strip():
             raise RegulatedRecordError("A recovery reason is required.")
+        actor = _require_actor(actor, "reconcile_batches", session_id)
+        # Re-check the distinct recovery authority before taking the batch lock.
+        actor = _require_actor(actor, "recover_batches", session_id)
         with _WRITE_LOCK:
             conn = get_conn()
             try:
@@ -265,9 +361,14 @@ class RegulatedRecordService:
                 conn.execute("""UPDATE batch_reconciliations SET reconciled_at = ?, reconciled_by = ?,
                     recovery_reason = ?, status = 'completed', device_summary_json = ? WHERE batch_id = ?""",
                              (_utc_now(), actor.username, reason.strip(), json.dumps(summary, sort_keys=True), batch["id"]))
-                conn.execute("UPDATE regulated_batches SET state = ? WHERE id = ?", (STATE_ACTIVE, batch["id"]))
-                _append_audit(conn, actor, "BATCH_RECONCILED_AND_RESUMED",
-                              f"Batch '{batch['external_batch_id']}' reconciled and resumed; counts={json.dumps(summary, sort_keys=True)}.", session_id)
+                current = conn.execute("""SELECT external_batch_id, state, version
+                    FROM regulated_batches WHERE id = ?""", (batch["id"],)).fetchone()
+                self._transition_locked(conn, actor, batch["id"], current,
+                                        STATE_RECONCILED, current["version"], session_id, reason)
+                reconciled = conn.execute("""SELECT external_batch_id, state, version
+                    FROM regulated_batches WHERE id = ?""", (batch["id"],)).fetchone()
+                self._transition_locked(conn, actor, batch["id"], reconciled,
+                                        STATE_ACTIVE, reconciled["version"], session_id, reason)
                 conn.commit()
                 return batch["id"], summary
             except Exception:
@@ -277,27 +378,11 @@ class RegulatedRecordService:
                 conn.close()
 
     def close_batch(self, actor: User, batch_id: str, session_id: str = "") -> None:
-        """Mark a stopped batch closed only after any required reconciliation."""
-        actor = _require_actor(actor, "close_batch", session_id)
-        with _WRITE_LOCK:
-            conn = get_conn()
-            try:
-                conn.execute("BEGIN IMMEDIATE")
-                batch = conn.execute("SELECT external_batch_id, state FROM regulated_batches WHERE id = ?", (batch_id,)).fetchone()
-                if batch is None or batch["state"] == "reconciliation_pending":
-                    raise RegulatedRecordError("Batch closure is blocked pending reconciliation.")
-                if batch["state"] == "closed":
-                    conn.commit(); return
-                if batch["state"] != STATE_STOPPED:
-                    raise RegulatedRecordError("Only a stopped batch may be closed.")
-                conn.execute("UPDATE regulated_batches SET state = 'closed' WHERE id = ?", (batch_id,))
-                _append_audit(conn, actor, "AUTHORITATIVE_BATCH_CLOSED",
-                              f"Authoritative batch '{batch['external_batch_id']}' closed.", session_id)
-                conn.commit()
-            except Exception:
-                conn.rollback(); raise
-            finally:
-                conn.close()
+        """Close only a released batch; review and release remain distinct actions."""
+        status = self.get_batch_status(batch_id)
+        if status["state"] == STATE_CLOSED:
+            return
+        self.transition_batch(actor, batch_id, STATE_CLOSED, status["version"], session_id)
 
     def get_batch_scan_counts(self, external_batch_id: str) -> dict[int, tuple[int, int]]:
         conn = get_conn()

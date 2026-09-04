@@ -65,7 +65,7 @@ from typing import Generator
 log = logging.getLogger("pharma.cfr21.db")
 
 # ── Schema version — bump this when adding columns or tables ──────────────────
-_SCHEMA_VERSION = 8
+_SCHEMA_VERSION = 9
 
 
 # ── Database path ─────────────────────────────────────────────────────────────
@@ -381,7 +381,13 @@ def _migrate():
         if current < 8:
             _migrate_v8_authoritative_sessions(conn)
             conn.execute("UPDATE schema_version SET version = 8")
+            current = 8
             log.info("Schema migrated to version 8 - authoritative sessions")
+
+        if current < 9:
+            _migrate_v9_batch_state_machine(conn)
+            conn.execute("UPDATE schema_version SET version = 9")
+            log.info("Schema migrated to version 9 - controlled batch lifecycle")
 
 
 def _validate_permission_matrix():
@@ -577,6 +583,59 @@ def _migrate_v8_authoritative_sessions(conn):
         CREATE INDEX IF NOT EXISTS idx_user_sessions_user_state
         ON user_sessions(user_id, state)
     """)
+
+
+def _migrate_v9_batch_state_machine(conn):
+    """Replace the original narrow state constraint with the full lifecycle."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(regulated_batches)")}
+    if "version" in columns:
+        return
+
+    # The replacement keeps child records attached to the same table name.
+    # Deferred checks run after the replacement table is in place at commit.
+    conn.execute("PRAGMA defer_foreign_keys = ON")
+    conn.execute("DROP TRIGGER IF EXISTS prevent_regulated_batch_delete")
+    conn.execute("DROP TRIGGER IF EXISTS prevent_regulated_batch_identity_update")
+    conn.execute("""
+        CREATE TABLE regulated_batches_v9 (
+            id TEXT PRIMARY KEY,
+            external_batch_id TEXT NOT NULL,
+            operator_id TEXT NOT NULL,
+            product_name TEXT NOT NULL DEFAULT '',
+            state TEXT NOT NULL CHECK(state IN (
+                'draft', 'configured', 'active', 'stopped',
+                'reconciliation_pending', 'reconciled', 'reviewed',
+                'released', 'closed'
+            )),
+            configuration_json TEXT NOT NULL,
+            configuration_version_id TEXT,
+            created_at TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            stopped_at TEXT,
+            stopped_by TEXT,
+            version INTEGER NOT NULL DEFAULT 1 CHECK(version > 0),
+            UNIQUE(external_batch_id, state)
+        )
+    """)
+    conn.execute("""
+        INSERT INTO regulated_batches_v9 (
+            id, external_batch_id, operator_id, product_name, state,
+            configuration_json, configuration_version_id, created_at,
+            created_by, started_at, stopped_at, stopped_by, version
+        )
+        SELECT id, external_batch_id, operator_id, product_name, state,
+               configuration_json, configuration_version_id, created_at,
+               created_by, started_at, stopped_at, stopped_by, 1
+        FROM regulated_batches
+    """)
+    conn.execute("DROP TABLE regulated_batches")
+    conn.execute("ALTER TABLE regulated_batches_v9 RENAME TO regulated_batches")
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_regulated_batches_external_state
+        ON regulated_batches(external_batch_id, state)
+    """)
+    _migrate_v5_immutable_regulated_records(conn)
 
 
 def _seed_default_admin():

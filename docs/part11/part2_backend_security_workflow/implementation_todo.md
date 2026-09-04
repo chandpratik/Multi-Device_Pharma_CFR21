@@ -75,25 +75,25 @@ boundary established first.
 
 ## 5. Implement the batch state machine
 
-- [ ] Migrate `regulated_batches.state` from the current limited state set to
+- [x] Migrate `regulated_batches.state` from the current limited state set to
   the approved lifecycle (proposed: `draft -> configured -> active -> stopped
   -> reconciliation_pending -> reconciled -> reviewed -> released/closed`).
-- [ ] Create one transactional transition method that locks/reloads the batch,
+- [x] Create one transactional transition method that locks/reloads the batch,
   checks the current state, permission, prerequisites, and expected version,
   then records the new state and audit event atomically.
 - [ ] Make batch creation produce `draft`; require an approved configuration,
   recipe, operator, and device assignments before transition to `configured`.
 - [ ] Allow acquisition to start only from `configured` (or an explicitly
   approved recovery transition) and scans only while the batch is `active`.
-- [ ] Make stop, reconciliation, review, release, and close distinct operations
+- [x] Make stop, reconciliation, review, release, and close distinct operations
   with distinct permissions rather than aliases for `stop_logging`.
-- [ ] Route interrupted batches to `reconciliation_pending`; block restart,
+- [x] Route interrupted batches to `reconciliation_pending`; block restart,
   review, release, and close until reconciliation is completed.
 - [ ] Verify scan count, per-device sequence continuity, duplicate delivery IDs,
   and assigned-device completeness before marking a batch `reconciled`.
 - [ ] Make released/closed batches immutable at both service and database level,
   except for separately controlled correction/amendment records.
-- [ ] Handle two simultaneous transition attempts deterministically so only one
+- [x] Handle two simultaneous transition attempts deterministically so only one
   succeeds and the losing caller receives a stale-state error.
 
 ## 6. Enforce device authorization
