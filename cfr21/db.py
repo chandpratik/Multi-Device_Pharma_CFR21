@@ -65,7 +65,7 @@ from typing import Generator
 log = logging.getLogger("pharma.cfr21.db")
 
 # ── Schema version — bump this when adding columns or tables ──────────────────
-_SCHEMA_VERSION = 13
+_SCHEMA_VERSION = 14
 
 
 # ── Database path ─────────────────────────────────────────────────────────────
@@ -411,7 +411,13 @@ def _migrate():
         if current < 13:
             _migrate_v13_reauthentication_grants(conn)
             conn.execute("UPDATE schema_version SET version = 13")
+            current = 13
             log.info("Schema migrated to version 13 - reauthentication grants")
+
+        if current < 14:
+            _migrate_v14_terminal_batch_immutability(conn)
+            conn.execute("UPDATE schema_version SET version = 14")
+            log.info("Schema migrated to version 14 - terminal batch immutability")
 
 
 def _validate_permission_matrix():
@@ -785,6 +791,16 @@ def _migrate_v13_reauthentication_grants(conn):
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_reauthentication_grants_lookup
         ON reauthentication_grants(session_id, action, target, expires_at)
+    """)
+
+
+def _migrate_v14_terminal_batch_immutability(conn):
+    """Stop direct or service-level mutation after a terminal lifecycle state."""
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS prevent_terminal_batch_update
+        BEFORE UPDATE ON regulated_batches
+        WHEN OLD.state IN ('released', 'closed')
+        BEGIN SELECT RAISE(ABORT, 'released and closed batches are immutable'); END
     """)
 
 

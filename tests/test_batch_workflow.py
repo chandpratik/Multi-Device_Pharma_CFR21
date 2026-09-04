@@ -68,3 +68,20 @@ def test_interrupted_recovery_records_reconciliation_before_resuming(admin_user)
     service.reconcile_and_resume_batch(admin_user, "BATCH-WORKFLOW-3", "restart review", "s-3")
     resumed = service.get_batch_status(batch_id)
     assert (resumed["state"], resumed["version"]) == ("active", 4)
+
+
+def test_released_batch_is_immutable_at_database_level(admin_user):
+    service = RegulatedRecordService()
+    batch_id = service.start_or_resume_batch(
+        admin_user, "BATCH-WORKFLOW-IMMUTABLE", "admin", "Tablet", {}, "s-4")
+    service.stop_batch(admin_user, batch_id, "s-4")
+    version = service.get_batch_status(batch_id)["version"]
+    version = service.transition_batch(admin_user, batch_id, "reviewed", version, "s-4")
+    service.transition_batch(admin_user, batch_id, "released", version, "s-4")
+    with db.get_conn_ctx() as conn:
+        try:
+            conn.execute("UPDATE regulated_batches SET state = 'closed' WHERE id = ?", (batch_id,))
+        except Exception:
+            pass
+        else:
+            raise AssertionError("A released batch accepted a direct database update")
