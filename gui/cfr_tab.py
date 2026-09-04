@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QFrame, QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractItemView, QComboBox, QLineEdit, QDateEdit,
     QMessageBox, QFileDialog, QStackedWidget, QSizePolicy,
-    QScrollArea, QCheckBox,
+    QScrollArea, QCheckBox, QSpinBox,
 )
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtCore import Qt, QDate, QTimer
@@ -39,6 +39,8 @@ from cfr21.user_admin_service import (
     reset_password,
 )
 from cfr21.record_integrity import get_integrity_records, verify_batch_files
+from cfr21.device_registry_service import DeviceRegistryService, DeviceRegistryError
+from cfr21.reauthentication_service import issue_grant, ReauthenticationError
 import cfr21.report_export as report_export
 
 # ── Style constants ───────────────────────────────────────────────────────────
@@ -182,9 +184,10 @@ class CFR21Tab(QWidget):
         # Nav buttons
         self._nav_audit   = self._nav_btn("📋  Audit Trail")
         self._nav_users   = self._nav_btn("👥  User Management")
+        self._nav_devices = self._nav_btn("Device Management")
         self._nav_integrity = self._nav_btn("🔒  File Integrity")
 
-        for btn in [self._nav_audit, self._nav_users, self._nav_integrity]:
+        for btn in [self._nav_audit, self._nav_users, self._nav_devices, self._nav_integrity]:
             btn.setCheckable(True)
             sv.addWidget(btn)
 
@@ -207,18 +210,21 @@ class CFR21Tab(QWidget):
 
         self._page_audit     = AuditTrailPage(self._sm, config=self._config)
         self._page_users     = UserManagementPage(self._sm)
+        self._page_devices   = DeviceManagementPage(self._sm)
         self._page_integrity = FileIntegrityPage(self._sm, config=self._config)
 
         self._stack.addWidget(self._page_audit)      # index 0
         self._stack.addWidget(self._page_users)      # index 1
-        self._stack.addWidget(self._page_integrity)  # index 2
+        self._stack.addWidget(self._page_devices)    # index 2
+        self._stack.addWidget(self._page_integrity)  # index 3
 
         root.addWidget(self._stack, 1)
 
         # Wire nav buttons
         self._nav_audit.clicked.connect(lambda: self._switch(0))
         self._nav_users.clicked.connect(lambda: self._switch(1))
-        self._nav_integrity.clicked.connect(lambda: self._switch(2))
+        self._nav_devices.clicked.connect(lambda: self._switch(2))
+        self._nav_integrity.clicked.connect(lambda: self._switch(3))
 
         # Start on audit trail
         self._switch(0)
@@ -232,7 +238,7 @@ class CFR21Tab(QWidget):
     def _switch(self, index: int):
         self._stack.setCurrentIndex(index)
         for i, btn in enumerate([
-            self._nav_audit, self._nav_users, self._nav_integrity
+            self._nav_audit, self._nav_users, self._nav_devices, self._nav_integrity
         ]):
             btn.setChecked(i == index)
 
@@ -242,6 +248,8 @@ class CFR21Tab(QWidget):
         elif index == 1:
             self._page_users.refresh()
         elif index == 2:
+            self._page_devices.refresh()
+        elif index == 3:
             self._page_integrity.refresh()
 
     def refresh(self):
@@ -916,6 +924,129 @@ class UserManagementPage(QWidget):
 # ══════════════════════════════════════════════════════════════════════════════
 #  PAGE 3: FILE INTEGRITY
 # ══════════════════════════════════════════════════════════════════════════════
+
+class DeviceManagementPage(QWidget):
+    """Administrator-only device registry operations backed by live sessions."""
+
+    def __init__(self, session_mgr: SessionManager, parent=None):
+        super().__init__(parent)
+        self._sm = session_mgr
+        self._service = DeviceRegistryService()
+        self._rows: list[dict] = []
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 16, 20, 16)
+        header = QHBoxLayout()
+        header.addWidget(_lbl("Device Management", _S_SECTION_TITLE))
+        header.addStretch()
+        refresh = QPushButton("Refresh")
+        refresh.setStyleSheet(_S_SM_BTN)
+        refresh.clicked.connect(self.refresh)
+        header.addWidget(refresh)
+        layout.addLayout(header)
+        self._table = QTableWidget(0, 6)
+        self._table.setHorizontalHeaderLabels(["Number", "Name", "Source", "Approval", "Enabled", "Created By"])
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._table.setStyleSheet(_S_TABLE)
+        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self._table, 1)
+
+        form = QHBoxLayout()
+        self._number = QSpinBox(); self._number.setRange(1, 9999); self._number.setStyleSheet(_S_INPUT)
+        self._source = _inp("Source identity", 180)
+        self._name = _inp("Display name", 150)
+        self._reason = _inp("Reason", 180)
+        register = QPushButton("Register")
+        register.setStyleSheet(_S_ACTION_BTN)
+        register.clicked.connect(self._register)
+        form.addWidget(self._number); form.addWidget(self._source); form.addWidget(self._name)
+        form.addWidget(self._reason); form.addWidget(register); form.addStretch()
+        layout.addLayout(form)
+
+        actions = QHBoxLayout()
+        approve = QPushButton("Approve Selected")
+        approve.setStyleSheet(_S_SUCCESS_BTN)
+        approve.clicked.connect(self._approve)
+        deactivate = QPushButton("Deactivate Selected")
+        deactivate.setStyleSheet(_S_DANGER_BTN)
+        deactivate.clicked.connect(self._deactivate)
+        actions.addWidget(approve); actions.addWidget(deactivate); actions.addStretch()
+        layout.addLayout(actions)
+
+    def _actor(self):
+        if not self._sm.current_user or not self._sm.can("manage_devices"):
+            QMessageBox.warning(self, "Permission Denied", "Administrator device authority is required.")
+            return None
+        return self._sm.current_user
+
+    def _selected(self):
+        row = self._table.currentRow()
+        return self._rows[row] if 0 <= row < len(self._rows) else None
+
+    def refresh(self):
+        actor = self._actor()
+        if not actor:
+            return
+        try:
+            self._rows = self._service.list_devices(actor, self._sm.session_id)
+        except Exception as exc:
+            QMessageBox.critical(self, "Device Registry", str(exc)); return
+        self._table.setRowCount(len(self._rows))
+        for index, row in enumerate(self._rows):
+            values = [row["device_number"], row["display_name"], row["source_identifier"],
+                      row["approval_status"], "Yes" if row["enabled"] else "No", row["created_by"]]
+            for column, value in enumerate(values):
+                self._table.setItem(index, column, QTableWidgetItem(str(value)))
+
+    def _register(self):
+        actor = self._actor()
+        if not actor:
+            return
+        try:
+            self._service.register_device(actor, self._sm.session_id, self._number.value(),
+                                          self._source.text(), self._name.text(), self._reason.text())
+            self._source.clear(); self._name.clear(); self._reason.clear(); self.refresh()
+        except DeviceRegistryError as exc:
+            QMessageBox.critical(self, "Registration Blocked", str(exc))
+
+    def _grant(self, device_id: str):
+        from gui.cfr_dialogs import ReauthDialog
+        dialog = ReauthDialog(self._sm, "change this device", self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return ""
+        return issue_grant(self._sm.current_user, self._sm.session_id,
+                           dialog.verified_password, "manage_devices", f"device:{device_id}")
+
+    def _approve(self):
+        row = self._selected()
+        if not row:
+            return
+        try:
+            grant = self._grant(row["id"])
+            if grant:
+                self._service.approve_device(self._sm.current_user, self._sm.session_id,
+                                             row["id"], self._reason.text() or "device approval", grant)
+                self.refresh()
+        except (DeviceRegistryError, ReauthenticationError) as exc:
+            QMessageBox.critical(self, "Approval Blocked", str(exc))
+
+    def _deactivate(self):
+        row = self._selected()
+        if not row:
+            return
+        try:
+            grant = self._grant(row["id"])
+            if grant:
+                self._service.deactivate_device(self._sm.current_user, self._sm.session_id,
+                                                row["id"], self._reason.text() or "device deactivation", grant)
+                self.refresh()
+        except (DeviceRegistryError, ReauthenticationError) as exc:
+            QMessageBox.critical(self, "Deactivation Blocked", str(exc))
+
 
 class FileIntegrityPage(QWidget):
     """
