@@ -308,10 +308,12 @@ class AppController:
 
     def arm_teach(self, device_id: int):
         self._require_permission("set_master_code", target=f"device:{device_id}")
+        self._reject_active_batch_change("arm teach mode")
         self._loggers[device_id].arm_teach()
 
     def clear_master(self, device_id: int):
         self._require_permission("clear_master_code", target=f"device:{device_id}")
+        self._reject_active_batch_change("clear a master code")
         self._loggers[device_id].clear_master()
 
 
@@ -319,8 +321,14 @@ class AppController:
     def apply_new_config(self, new_config: AppConfig):
         """Update live config. Changes apply on next Start Logging."""
         self._require_permission("change_settings", target="configuration")
+        self._reject_active_batch_change("apply configuration changes")
         self.config = new_config
         log.info("Config updated — changes apply on next Start Logging")
+
+    def _reject_active_batch_change(self, action: str) -> None:
+        """Keep production inputs stable for the lifetime of an active batch."""
+        if self._regulated_batch_id or self.is_running():
+            raise RuntimeError(f"Cannot {action} while a regulated batch is active.")
 
     def _apply_config(self):
         """Push current config into loggers before starting."""
