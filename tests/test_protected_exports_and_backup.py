@@ -36,6 +36,19 @@ def test_manual_backup_succeeds_for_authorized_admin(admin_user, tmp_path):
     assert verify_backup_for_restore(backup_path)[0]
 
 
+def test_manual_backup_is_deleted_when_audit_fails(admin_user, tmp_path, monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise audit.AuditWriteError("forced audit failure")
+
+    monkeypatch.setattr(audit, "append_event", fail)
+    ok, message = run_backup_authorized(admin_user, "s-1", str(tmp_path))
+
+    assert not ok
+    assert "audit" in message.lower()
+    assert not list(tmp_path.rglob("compliance_backup_*.db"))
+    assert not list(tmp_path.rglob("*.audit_checkpoint.json"))
+
+
 def test_restore_requires_issued_admin_session(admin_user, tmp_path):
     ok, backup_path = run_backup_authorized(admin_user, "s-1", str(tmp_path))
     assert ok, backup_path

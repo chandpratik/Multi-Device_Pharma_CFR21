@@ -4,12 +4,13 @@ from cfr21.authorization import AuthorizationError, SessionContext, authorize_se
 from cfr21.user_manager import (
     ROLE_DISPLAY,
     User,
-    admin_reset_password,
-    create_user,
-    deactivate_user,
-    reactivate_user,
+    admin_reset_password_in_transaction,
+    create_user_in_transaction,
+    deactivate_user_in_transaction,
+    reactivate_user_in_transaction,
 )
 from cfr21.reauthentication_service import ReauthenticationError, consume_grant
+from cfr21.db import get_conn_ctx
 import cfr21.audit_trail as audit
 
 
@@ -32,18 +33,17 @@ class UserAdministrationService:
         except AuthorizationError:
             return False, "You are not authorized to create user accounts."
 
-        ok, msg = create_user(actor, username, password, role)
-        if ok:
-            audit.log(
-                user=actor,
-                action=audit.ACTION_USER_CREATED,
-                detail=(
+        with get_conn_ctx() as conn:
+            ok, msg = create_user_in_transaction(
+                conn, actor, username, password, role)
+            if ok:
+                audit.append_event_in_transaction(
+                    conn, actor, audit.ACTION_USER_CREATED,
                     f"Account '{username}' (role: {ROLE_DISPLAY[role]}) "
-                    f"created by '{actor.username}'."
-                ),
-                session_id=session_id,
-            )
-        return ok, msg
+                    f"created by '{actor.username}'.",
+                    session_id, target_type="user", target_id=username,
+                    new_value={"role": role, "is_active": True})
+            return ok, msg
 
     def deactivate_account(self, admin_user: User, session_id: str,
                            target_username: str) -> tuple[bool, str]:
@@ -52,15 +52,16 @@ class UserAdministrationService:
         except AuthorizationError:
             return False, "You are not authorized to deactivate user accounts."
 
-        ok, msg = deactivate_user(actor, target_username)
-        if ok:
-            audit.log(
-                user=actor,
-                action=audit.ACTION_USER_DEACTIVATED,
-                detail=f"Account '{target_username}' deactivated.",
-                session_id=session_id,
-            )
-        return ok, msg
+        with get_conn_ctx() as conn:
+            ok, msg = deactivate_user_in_transaction(
+                conn, actor, target_username)
+            if ok:
+                audit.append_event_in_transaction(
+                    conn, actor, audit.ACTION_USER_DEACTIVATED,
+                    f"Account '{target_username}' deactivated.",
+                    session_id, target_type="user", target_id=target_username,
+                    new_value={"is_active": False})
+            return ok, msg
 
     def reactivate_account(self, admin_user: User, session_id: str,
                            target_username: str) -> tuple[bool, str]:
@@ -69,15 +70,16 @@ class UserAdministrationService:
         except AuthorizationError:
             return False, "You are not authorized to reactivate user accounts."
 
-        ok, msg = reactivate_user(actor, target_username)
-        if ok:
-            audit.log(
-                user=actor,
-                action=audit.ACTION_USER_REACTIVATED,
-                detail=f"Account '{target_username}' reactivated.",
-                session_id=session_id,
-            )
-        return ok, msg
+        with get_conn_ctx() as conn:
+            ok, msg = reactivate_user_in_transaction(
+                conn, actor, target_username)
+            if ok:
+                audit.append_event_in_transaction(
+                    conn, actor, audit.ACTION_USER_REACTIVATED,
+                    f"Account '{target_username}' reactivated.",
+                    session_id, target_type="user", target_id=target_username,
+                    new_value={"is_active": True})
+            return ok, msg
 
     def reset_password(self, admin_user: User, session_id: str,
                        target_username: str, new_password: str,
@@ -92,12 +94,17 @@ class UserAdministrationService:
         except ReauthenticationError:
             return False, "Recent reauthentication is required to reset passwords."
 
-        return admin_reset_password(
-            actor,
-            target_username,
-            new_password,
-            session_id=session_id,
-        )
+        with get_conn_ctx() as conn:
+            ok, msg = admin_reset_password_in_transaction(
+                conn, actor, target_username, new_password)
+            if ok:
+                audit.append_event_in_transaction(
+                    conn, actor, audit.ACTION_PASSWORD_RESET,
+                    f"Administrator '{actor.username}' reset password for "
+                    f"'{target_username}'. User forced to change on next login.",
+                    session_id, target_type="user", target_id=target_username,
+                    new_value={"must_change_pw": True})
+            return ok, msg
 
 
 _SERVICE = UserAdministrationService()

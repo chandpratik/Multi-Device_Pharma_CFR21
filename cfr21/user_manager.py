@@ -437,25 +437,133 @@ def admin_reset_password(admin_user: User, target_username: str,
                 WHERE id = ?
             """, (new_hash, now_iso, row["id"]))
 
+            import cfr21.audit_trail as _audit
+            _audit.append_event_in_transaction(
+                conn,
+                admin_user,
+                _audit.ACTION_PASSWORD_RESET,
+                (
+                    f"Administrator '{admin_user.username}' reset password for "
+                    f"'{target_username}'. User forced to change on next login."
+                ),
+                session_id=session_id,
+                target_type="user",
+                target_id=target_username,
+                new_value={"must_change_pw": True},
+            )
             log.info("Admin '%s' reset password for '%s'",
                      admin_user.username, target_username)
-
-        # Audit internally — callers must not forget to log this (§11.10e)
-        import cfr21.audit_trail as _audit
-        _audit.log(
-            user       = admin_user,
-            action     = _audit.ACTION_PASSWORD_RESET,
-            detail     = (
-                f"Administrator '{admin_user.username}' reset password for "
-                f"'{target_username}'. User forced to change on next login."
-            ),
-            session_id = session_id,
-        )
         return True, ""
 
     except Exception as e:
         log.error("admin_reset_password() DB error: %s", e)
         return False, f"Database error: {e}"
+
+
+def admin_reset_password_in_transaction(conn, admin_user: User,
+                                        target_username: str,
+                                        new_password: str,
+                                        min_length: int = 8) -> tuple[bool, str]:
+    """Apply an administrator password reset to a caller-owned transaction."""
+    if admin_user.role != ROLE_ADMINISTRATOR:
+        return False, "Only administrators can reset other users' passwords."
+    ok, msg = _check_complexity(new_password, min_length)
+    if not ok:
+        return False, msg
+    row = conn.execute(
+        "SELECT id FROM users WHERE username = ? COLLATE NOCASE",
+        (target_username,),
+    ).fetchone()
+    if row is None:
+        return False, f"User '{target_username}' not found."
+    new_hash = bcrypt.hashpw(
+        new_password.encode("utf-8"), bcrypt.gensalt(rounds=12)
+    ).decode("utf-8")
+    now_iso = datetime.now().astimezone().isoformat(timespec="seconds")
+    conn.execute("""
+        UPDATE users
+        SET password_hash = ?, must_change_pw = 1, failed_attempts = 0,
+            locked_until = NULL, password_changed_at = ?
+        WHERE id = ?
+    """, (new_hash, now_iso, row["id"]))
+    return True, ""
+
+
+def create_user_in_transaction(conn, created_by: User, username: str,
+                               password: str, role: str,
+                               min_length: int = 8) -> tuple[bool, str]:
+    """Create a user without committing; the caller must append audit evidence."""
+    if created_by.role != ROLE_ADMINISTRATOR:
+        return False, "Only administrators can create user accounts."
+    username = username.strip()
+    if not username:
+        return False, "Username cannot be empty."
+    ok, msg = _check_username(username)
+    if not ok:
+        return False, msg
+    if role not in ALL_ROLES:
+        return False, f"Invalid role '{role}'. Must be one of: {ALL_ROLES}"
+    ok, msg = _check_complexity(password, min_length)
+    if not ok:
+        return False, msg
+    existing = conn.execute(
+        "SELECT id FROM users WHERE username = ? COLLATE NOCASE",
+        (username,),
+    ).fetchone()
+    if existing:
+        return False, f"Username '{username}' already exists."
+    pw_hash = bcrypt.hashpw(
+        password.encode("utf-8"), bcrypt.gensalt(rounds=12)
+    ).decode("utf-8")
+    now_iso = datetime.now().astimezone().isoformat(timespec="seconds")
+    conn.execute("""
+        INSERT INTO users
+            (username, password_hash, role, is_active, must_change_pw,
+             failed_attempts, locked_until, password_changed_at, created_at,
+             created_by)
+        VALUES (?, ?, ?, 1, 1, 0, NULL, ?, ?, ?)
+    """, (username, pw_hash, role, now_iso, now_iso, created_by.username))
+    return True, ""
+
+
+def deactivate_user_in_transaction(conn, admin_user: User,
+                                   target_username: str) -> tuple[bool, str]:
+    """Deactivate a user without committing; the caller must audit it."""
+    if admin_user.role != ROLE_ADMINISTRATOR:
+        return False, "Only administrators can deactivate accounts."
+    if admin_user.username.lower() == target_username.lower():
+        return False, "You cannot deactivate your own account."
+    row = conn.execute(
+        "SELECT id FROM users WHERE username = ? COLLATE NOCASE",
+        (target_username,),
+    ).fetchone()
+    if row is None:
+        return False, f"User '{target_username}' not found."
+    result = conn.execute(
+        "UPDATE users SET is_active = 0 WHERE id = ?", (row["id"],))
+    if result.rowcount == 0:
+        return False, f"User '{target_username}' not found."
+    conn.execute("""
+        UPDATE user_sessions
+        SET state = 'logged_out', termination_reason = 'Account deactivated'
+        WHERE user_id = ? AND state = 'active'
+    """, (row["id"],))
+    return True, ""
+
+
+def reactivate_user_in_transaction(conn, admin_user: User,
+                                   target_username: str) -> tuple[bool, str]:
+    """Reactivate a user without committing; the caller must audit it."""
+    if admin_user.role != ROLE_ADMINISTRATOR:
+        return False, "Only administrators can reactivate accounts."
+    result = conn.execute("""
+        UPDATE users
+        SET is_active = 1, failed_attempts = 0, locked_until = NULL
+        WHERE username = ? COLLATE NOCASE
+    """, (target_username,))
+    if result.rowcount == 0:
+        return False, f"User '{target_username}' not found."
+    return True, ""
 
 
 def create_user(created_by: User, username: str, password: str,
@@ -507,6 +615,16 @@ def create_user(created_by: User, username: str, password: str,
             """, (username, pw_hash, role, now_iso, now_iso,
                   created_by.username))
 
+            import cfr21.audit_trail as _audit
+            _audit.append_event_in_transaction(
+                conn,
+                created_by,
+                _audit.ACTION_USER_CREATED,
+                f"Account '{username}' (role: {ROLE_DISPLAY[role]}) created.",
+                target_type="user",
+                target_id=username,
+                new_value={"role": role, "is_active": True},
+            )
             log.info("User '%s' (role: %s) created by '%s'",
                      username, role, created_by.username)
             return True, ""
@@ -552,6 +670,16 @@ def deactivate_user(admin_user: User, target_username: str) -> tuple[bool, str]:
                 WHERE user_id = ? AND state = 'active'
             """, (row["id"],))
 
+            import cfr21.audit_trail as _audit
+            _audit.append_event_in_transaction(
+                conn,
+                admin_user,
+                _audit.ACTION_USER_DEACTIVATED,
+                f"Account '{target_username}' deactivated.",
+                target_type="user",
+                target_id=target_username,
+                new_value={"is_active": False},
+            )
             log.info("User '%s' deactivated by '%s'",
                      target_username, admin_user.username)
             return True, ""
@@ -577,6 +705,16 @@ def reactivate_user(admin_user: User, target_username: str) -> tuple[bool, str]:
             if result.rowcount == 0:
                 return False, f"User '{target_username}' not found."
 
+            import cfr21.audit_trail as _audit
+            _audit.append_event_in_transaction(
+                conn,
+                admin_user,
+                _audit.ACTION_USER_REACTIVATED,
+                f"Account '{target_username}' reactivated.",
+                target_type="user",
+                target_id=target_username,
+                new_value={"is_active": True},
+            )
             log.info("User '%s' reactivated by '%s'",
                      target_username, admin_user.username)
             return True, ""

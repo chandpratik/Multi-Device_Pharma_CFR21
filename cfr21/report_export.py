@@ -329,13 +329,13 @@ def export_audit_trail(output_path: str,
         )
         doc.build(story, onFirstPage=cb, onLaterPages=cb)
 
-        # Write export event to audit trail
-        audit.log(
-            user   = generated_by,
-            action = audit.ACTION_REPORT_EXPORTED,
-            detail = f"Audit Trail PDF exported: {os.path.basename(output_path)} "
-                     f"({len(records)} records)",
-            session_id = session_id,
+        _commit_export_audit(
+            output_path,
+            generated_by,
+            session_id,
+            f"Audit Trail PDF exported: {os.path.basename(output_path)} "
+            f"({len(records)} records)",
+            target_id="audit_trail",
         )
 
         log.info("Audit trail PDF exported: %s (%s records)",
@@ -621,12 +621,13 @@ def export_batch_record(output_path: str,
         )
         doc.build(story, onFirstPage=cb, onLaterPages=cb)
 
-        audit.log(
-            user   = generated_by,
-            action = audit.ACTION_REPORT_EXPORTED,
-            detail = (f"Batch Record PDF exported for batch '{batch_id}' "
-                      f"Device {device_id}: {os.path.basename(output_path)}"),
-            session_id = session_id,
+        _commit_export_audit(
+            output_path,
+            generated_by,
+            session_id,
+            f"Batch Record PDF exported for batch '{batch_id}' "
+            f"Device {device_id}: {os.path.basename(output_path)}",
+            target_id=f"batch:{batch_id}:device:{device_id}",
         )
 
         log.info("Batch record PDF exported: %s", output_path)
@@ -648,3 +649,27 @@ def _fmt_ts(iso_str: str) -> str:
         return dt.strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return iso_str[:19]  # best-effort truncation
+
+
+def _commit_export_audit(output_path: str, generated_by: User,
+                         session_id: str, detail: str, target_id: str) -> None:
+    """Require audit evidence for an export; remove an unaudited artifact."""
+    try:
+        audit.append_event(audit.event_for_user(
+            generated_by,
+            audit.ACTION_REPORT_EXPORTED,
+            detail,
+            session_id=session_id,
+            target_type="report",
+            target_id=target_id,
+            new_value={"output_path": output_path},
+        ))
+    except Exception as exc:
+        try:
+            if os.path.exists(output_path):
+                os.remove(output_path)
+        except OSError as cleanup_exc:
+            log.error("Could not remove unaudited report %s: %s",
+                      output_path, cleanup_exc)
+        raise audit.AuditWriteError(
+            f"Report audit evidence could not be committed: {exc}") from exc

@@ -1,6 +1,8 @@
 """Session-authorized account administration tests."""
 
 import cfr21.db as db
+import cfr21.audit_trail as audit
+import pytest
 import cfr21.user_manager as um
 from cfr21.user_admin_service import (
     create_account,
@@ -83,3 +85,15 @@ def test_password_reset_requires_authorized_admin_session(admin_user, operator_u
         grant,
     )
     assert ok, msg
+
+
+def test_account_creation_rolls_back_when_audit_fails(admin_user, monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise audit.AuditWriteError("forced audit failure")
+
+    monkeypatch.setattr(audit.AuditWriter, "append_in_transaction", fail)
+    with pytest.raises(audit.AuditWriteError):
+        create_account(
+            admin_user, "s-1", "auditfailureuser", "Audit@123",
+            um.ROLE_OPERATOR)
+    assert um.get_user("auditfailureuser") is None

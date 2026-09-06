@@ -157,12 +157,22 @@ def run_backup_authorized(actor: User, session_id: str, log_dir: str,
 
     ok, result = run_backup(log_dir, custom_dest)
     if ok:
-        audit.log(
-            user=actor,
-            action=audit.ACTION_BACKUP_CREATED,
-            detail=f"Manual compliance database backup created: {result}",
-            session_id=session_id,
-        )
+        try:
+            audit.append_event(audit.event_for_user(
+                actor,
+                audit.ACTION_BACKUP_CREATED,
+                f"Manual compliance database backup created: {result}",
+                session_id=session_id,
+                target_type="database_backup",
+                target_id=os.path.basename(result),
+                new_value={"backup_path": result},
+            ))
+        except Exception as exc:
+            _remove_backup_artifacts(result)
+            return False, (
+                "Backup was deleted because its audit evidence could not be "
+                f"committed: {exc}"
+            )
     return ok, result
 
 
@@ -416,6 +426,17 @@ def _prune_old_backups(backup_dir: str):
             log.info("Pruned old backup: %s", oldest)
     except Exception as e:
         log.warning("Could not prune old backups: %s", e)
+
+
+def _remove_backup_artifacts(backup_path: str) -> None:
+    """Remove a backup only when its required manual audit cannot be stored."""
+    for path in (backup_path, backup_path + ".audit_checkpoint.json"):
+        try:
+            if path and os.path.exists(path):
+                os.remove(path)
+        except OSError as exc:
+            log.error("Could not remove unaudited backup artifact %s: %s",
+                      path, exc)
 
 
 def list_backups(log_dir: str) -> list[dict]:
