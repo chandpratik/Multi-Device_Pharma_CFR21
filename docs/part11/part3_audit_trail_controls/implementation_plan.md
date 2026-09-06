@@ -42,6 +42,8 @@ The first Part 3 increment is implemented in the current codebase:
   session/UI lifecycle notifications, where there is no regulated business
   row to couple. Regulated account, device, version, settings, backup, export,
   restore, review, and retention boundaries use the shared writer directly.
+- The execution checklist is documented in manual_test_checklist.md for QA/UAT
+  evidence, including negative-path, tamper, restore, and deployment tests.
 
 This is an engineering increment, not validation evidence or a claim of full
 Part 11 compliance. The remaining production responsibility is execution and
