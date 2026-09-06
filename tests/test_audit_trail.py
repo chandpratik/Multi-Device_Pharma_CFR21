@@ -61,7 +61,8 @@ class TestHashChain:
         audit.log(admin_user, audit.ACTION_LOGIN, "original detail",
                   session_id="s")
         # Simulate an attacker editing a record directly in SQLite
-        with db.get_conn_ctx() as conn:
+        with db.get_conn_ctx(maintenance=True) as conn:
+            conn.execute("DROP TRIGGER prevent_audit_trail_update")
             conn.execute(
                 "UPDATE audit_trail SET detail = 'FALSIFIED' "
                 "WHERE detail = 'original detail'")
@@ -74,7 +75,8 @@ class TestHashChain:
         audit.log(admin_user, audit.ACTION_LOGOUT, "second", session_id="s")
         audit.log(admin_user, audit.ACTION_LOGIN, "third", session_id="s")
         # Delete the middle record — chain must break
-        with db.get_conn_ctx() as conn:
+        with db.get_conn_ctx(maintenance=True) as conn:
+            conn.execute("DROP TRIGGER prevent_audit_trail_delete")
             conn.execute("DELETE FROM audit_trail WHERE detail = 'second'")
         ok, message, _ = audit.verify_chain()
         assert not ok

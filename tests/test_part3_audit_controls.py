@@ -1,7 +1,10 @@
 """Part 3 controls for structured, coupled, and tamper-evident auditing."""
 
 import json
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+
+import pytest
 
 import cfr21.audit_trail as audit
 import cfr21.db as db
@@ -66,7 +69,8 @@ def test_audit_failure_rolls_back_regulated_write(admin_user, monkeypatch):
 
 def test_protected_signature_detects_local_hash_recalculation(admin_user):
     audit.log(admin_user, "SIGNED_EVENT", "original", session_id="s-1")
-    with db.get_conn_ctx() as conn:
+    with db.get_conn_ctx(maintenance=True) as conn:
+        conn.execute("DROP TRIGGER prevent_audit_trail_update")
         row = conn.execute(
             "SELECT * FROM audit_trail ORDER BY id DESC LIMIT 1").fetchone()
         forged_hash = audit._compute_record_hash(
@@ -87,7 +91,8 @@ def test_protected_signature_detects_local_hash_recalculation(admin_user):
 def test_external_anchor_detects_tail_truncation(admin_user):
     audit.log(admin_user, "ANCHOR_FIRST", "first", session_id="s-1")
     audit.log(admin_user, "ANCHOR_SECOND", "second", session_id="s-1")
-    with db.get_conn_ctx() as conn:
+    with db.get_conn_ctx(maintenance=True) as conn:
+        conn.execute("DROP TRIGGER prevent_audit_trail_delete")
         conn.execute("DELETE FROM audit_trail WHERE action = 'ANCHOR_SECOND'")
     ok, message, _ = audit.verify_chain()
     assert not ok
@@ -107,3 +112,29 @@ def test_serialized_writers_preserve_all_events(admin_user):
         ).fetchone()[0]
     assert count == 20
     assert audit.verify_chain()[0]
+
+
+def test_runtime_connection_enforces_audit_append_only(admin_user):
+    audit.log(admin_user, "RUNTIME_PROTECTION", "protected", session_id="s-1")
+
+    with pytest.raises(sqlite3.DatabaseError):
+        with db.get_conn_ctx() as conn:
+            conn.execute(
+                "UPDATE audit_trail SET detail = 'forged' "
+                "WHERE action = 'RUNTIME_PROTECTION'")
+
+    with pytest.raises(sqlite3.DatabaseError):
+        with db.get_conn_ctx() as conn:
+            conn.execute(
+                "DELETE FROM audit_trail WHERE action = 'RUNTIME_PROTECTION'")
+
+    with db.get_conn_ctx() as conn:
+        controls = conn.execute("""
+            SELECT runtime_identity, owner_identity, write_policy, enforcement
+            FROM runtime_schema_controls
+            WHERE object_name = 'audit_trail'
+        """).fetchone()
+    assert controls["runtime_identity"] == "application_runtime"
+    assert controls["owner_identity"] == "schema_maintenance"
+    assert controls["write_policy"] == "INSERT only"
+    assert "authorizer" in controls["enforcement"]

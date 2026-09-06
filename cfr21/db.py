@@ -65,7 +65,10 @@ from typing import Generator
 log = logging.getLogger("pharma.cfr21.db")
 
 # ── Schema version — bump this when adding columns or tables ──────────────────
-_SCHEMA_VERSION = 15
+_SCHEMA_VERSION = 16
+
+_AUDIT_TABLE = "audit_trail"
+_AUDIT_TRIGGER_PREFIX = "prevent_audit_trail_"
 
 
 # ── Database path ─────────────────────────────────────────────────────────────
@@ -88,7 +91,28 @@ def _db_path() -> str:
 
 # ── Connection factory ────────────────────────────────────────────────────────
 
-def get_conn() -> sqlite3.Connection:
+def _runtime_authorizer(action_code, arg1, arg2, database_name, source):
+    """Keep the application connection from mutating audit schema/data.
+
+    SQLite has no users or GRANTs.  The connection authorizer is the runtime
+    enforcement layer available to this deployment, while the database
+    triggers below remain effective for connections that do not use it.
+    """
+    protected_actions = {
+        sqlite3.SQLITE_UPDATE,
+        sqlite3.SQLITE_DELETE,
+        sqlite3.SQLITE_ALTER_TABLE,
+        sqlite3.SQLITE_DROP_TABLE,
+    }
+    if action_code in protected_actions and arg1 == _AUDIT_TABLE:
+        return sqlite3.SQLITE_DENY
+    if action_code == sqlite3.SQLITE_DROP_TRIGGER and (
+            arg1 or "").startswith(_AUDIT_TRIGGER_PREFIX):
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
+
+
+def get_conn(*, maintenance: bool = False) -> sqlite3.Connection:
     """
     Open and return a sqlite3 connection to compliance.db.
 
@@ -98,6 +122,8 @@ def get_conn() -> sqlite3.Connection:
       - Row factory        — rows behave like dicts (row["column"])
       - Timeout 10s        — wait up to 10s if DB is locked before raising
 
+    Runtime connections reject audit-row and audit-protection schema changes.
+    Set maintenance=True only for migrations or controlled recovery tooling.
     Caller is responsible for closing the connection.
     For automatic close, use the get_conn_ctx() context manager instead.
     """
@@ -106,11 +132,13 @@ def get_conn() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row          # access columns by name
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    if not maintenance:
+        conn.set_authorizer(_runtime_authorizer)
     return conn
 
 
 @contextmanager
-def get_conn_ctx() -> Generator[sqlite3.Connection, None, None]:
+def get_conn_ctx(*, maintenance: bool = False) -> Generator[sqlite3.Connection, None, None]:
     """
     Context manager version of get_conn().
     Commits on clean exit, rolls back on exception, always closes.
@@ -119,7 +147,7 @@ def get_conn_ctx() -> Generator[sqlite3.Connection, None, None]:
         with get_conn_ctx() as conn:
             conn.execute("INSERT INTO ...")
     """
-    conn = get_conn()
+    conn = get_conn(maintenance=maintenance)
     try:
         yield conn
         conn.commit()
@@ -424,6 +452,12 @@ def _migrate():
             conn.execute("UPDATE schema_version SET version = 15")
             current = 15
             log.info("Schema migrated to version 15 - structured audit event controls")
+
+        if current < 16:
+            _migrate_v16_runtime_schema_controls(conn)
+            conn.execute("UPDATE schema_version SET version = 16")
+            current = 16
+            log.info("Schema migrated to version 16 - runtime audit protection")
 
 
 def _validate_permission_matrix():
@@ -844,6 +878,46 @@ def _migrate_v15_audit_event_controls(conn):
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_audit_correlation
         ON audit_trail(correlation_id, id)
+    """)
+
+
+def _migrate_v16_runtime_schema_controls(conn):
+    """Enforce append-only audit rows in SQLite and document the boundary.
+
+    SQLite does not implement database users, ownership, or GRANTs.  The
+    application therefore uses a protected runtime connection plus immutable
+    database triggers.  Maintenance connections are intentionally explicit and
+    are reserved for migrations and controlled recovery tooling.
+    """
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS prevent_audit_trail_update
+        BEFORE UPDATE ON audit_trail
+        BEGIN SELECT RAISE(ABORT, 'audit_trail is append-only'); END
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS prevent_audit_trail_delete
+        BEFORE DELETE ON audit_trail
+        BEGIN SELECT RAISE(ABORT, 'audit_trail is append-only'); END
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS runtime_schema_controls (
+            object_name TEXT PRIMARY KEY,
+            runtime_identity TEXT NOT NULL,
+            owner_identity TEXT NOT NULL,
+            write_policy TEXT NOT NULL,
+            enforcement TEXT NOT NULL,
+            limitation TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        INSERT OR REPLACE INTO runtime_schema_controls (
+            object_name, runtime_identity, owner_identity, write_policy,
+            enforcement, limitation
+        ) VALUES (
+            'audit_trail', 'application_runtime', 'schema_maintenance',
+            'INSERT only', 'SQLite authorizer and append-only triggers',
+            'SQLite has no native database users or GRANT ownership model.'
+        )
     """)
 
 

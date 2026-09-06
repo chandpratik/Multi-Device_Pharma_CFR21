@@ -177,7 +177,7 @@ class TestDatabase:
         with db.get_conn_ctx() as conn:
             v = conn.execute("SELECT version FROM schema_version"
                              ).fetchone()["version"]
-        assert v == 15
+        assert v == 16
 
     def test_audit_table_has_hash_columns(self, fresh_db):
         with db.get_conn_ctx() as conn:
