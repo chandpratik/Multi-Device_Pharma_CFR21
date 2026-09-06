@@ -17,6 +17,8 @@ __pycache__/
 config/logs/
 compliance.db
 compliance.db-*
+audit_signing.key
+audit_anchor.json
 crash_log.txt
 *.log
 

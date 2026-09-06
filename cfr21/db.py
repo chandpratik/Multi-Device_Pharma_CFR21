@@ -65,7 +65,7 @@ from typing import Generator
 log = logging.getLogger("pharma.cfr21.db")
 
 # ── Schema version — bump this when adding columns or tables ──────────────────
-_SCHEMA_VERSION = 14
+_SCHEMA_VERSION = 15
 
 
 # ── Database path ─────────────────────────────────────────────────────────────
@@ -418,6 +418,12 @@ def _migrate():
             _migrate_v14_terminal_batch_immutability(conn)
             conn.execute("UPDATE schema_version SET version = 14")
             log.info("Schema migrated to version 14 - terminal batch immutability")
+
+        if current < 15:
+            _migrate_v15_audit_event_controls(conn)
+            conn.execute("UPDATE schema_version SET version = 15")
+            current = 15
+            log.info("Schema migrated to version 15 - structured audit event controls")
 
 
 def _validate_permission_matrix():
@@ -801,6 +807,38 @@ def _migrate_v14_terminal_batch_immutability(conn):
         BEFORE UPDATE ON regulated_batches
         WHEN OLD.state IN ('released', 'closed')
         BEGIN SELECT RAISE(ABORT, 'released and closed batches are immutable'); END
+    """)
+
+
+def _migrate_v15_audit_event_controls(conn):
+    """Add structured fields and indexes while retaining historical rows."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(audit_trail)")}
+    additions = {
+        "event_id": "TEXT",
+        "actor_id": "INTEGER",
+        "target_type": "TEXT",
+        "target_id": "TEXT",
+        "target_version": "INTEGER",
+        "old_value_json": "TEXT",
+        "new_value_json": "TEXT",
+        "result": "TEXT",
+        "correlation_id": "TEXT",
+        "signature": "TEXT",
+    }
+    for name, definition in additions.items():
+        if name not in columns:
+            conn.execute(f"ALTER TABLE audit_trail ADD COLUMN {name} {definition}")
+    conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_event_id
+        ON audit_trail(event_id) WHERE event_id IS NOT NULL
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_audit_target
+        ON audit_trail(target_type, target_id, id)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_audit_correlation
+        ON audit_trail(correlation_id, id)
     """)
 
 

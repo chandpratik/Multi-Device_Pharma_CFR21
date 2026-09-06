@@ -12,7 +12,7 @@ from cfr21.authorization import (
     SessionContext,
     authorize_session,
 )
-from cfr21.audit_trail import _compute_record_hash
+from cfr21.audit_trail import AuditEvent, AuditWriter
 from cfr21.db import get_conn
 from cfr21.user_manager import User, get_workstation
 
@@ -77,22 +77,20 @@ def _snapshot(value: Any) -> str:
     return json.dumps(value or {}, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def _append_audit(conn, actor: User, action: str, detail: str, session_id: str) -> None:
-    """Insert the audit record inside the same transaction as the business record."""
-    timestamp = _utc_now()
-    username = _actor_name(actor)
-    workstation = get_workstation()
-    last = conn.execute("SELECT record_hash FROM audit_trail ORDER BY id DESC LIMIT 1").fetchone()
-    prev_hash = last["record_hash"] if last else None
-    record_hash = _compute_record_hash(prev_hash, timestamp, username, actor.role,
-                                       action, detail, None, workstation, session_id)
-    conn.execute("""
-        INSERT INTO audit_trail
-            (timestamp, username, role, action, detail, reason, workstation,
-             session_id, prev_hash, record_hash)
-        VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
-    """, (timestamp, username, actor.role, action, detail, workstation,
-          session_id, prev_hash, record_hash))
+def _append_audit(conn, actor: User, action: str, detail: str,
+                  session_id: str, reason: Optional[str] = None,
+                  target_type: str = "", target_id: str = "",
+                  target_version: Optional[int] = None,
+                  old_value: Any = None, new_value: Any = None,
+                  result: str = "success", correlation_id: str = "") -> None:
+    """Insert signed structured evidence inside the business transaction."""
+    AuditWriter.append_in_transaction(conn, AuditEvent(
+        action=action, detail=detail, actor_id=actor.id,
+        actor_username=_actor_name(actor), role=actor.role,
+        session_id=session_id, workstation=get_workstation(), reason=reason,
+        target_type=target_type, target_id=target_id,
+        target_version=target_version, old_value=old_value,
+        new_value=new_value, result=result, correlation_id=correlation_id))
 
 
 class RegulatedRecordService:

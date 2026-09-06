@@ -1,10 +1,34 @@
 # Part 3 — Audit-Trail Controls
 
-## Objective
-
 Create a secure, computer-generated, time-stamped audit trail that records
 regulated creation, modification, deletion attempts, workflow transitions,
 privileged actions, and signature events without depending on GUI callers.
+
+## Incremental implementation status (2026-09-06)
+
+The first Part 3 increment is implemented in the current codebase:
+
+- `audit_trail` now has structured event fields for event UUID, actor ID,
+  target, version, old/new JSON values, result, and correlation ID.
+- `AuditEvent` provides the event contract and readable rendering, while the
+  compatibility `audit.log()` wrapper remains available to existing callers.
+- `AuditWriter` is the single serialized writer. Authoritative batch, scan,
+  draft, and legacy-import transactions use its in-transaction API, so a
+  required audit failure rolls back those business writes.
+- New events are signed with a generated protected-key file outside SQLite,
+  and the latest event is atomically recorded in an external anchor file.
+  Verification checks the structured hash chain, signatures, and anchor.
+- Regression coverage was added for structured fields, rollback on audit
+  failure, concurrent writers, local-hash recalculation, and tail truncation.
+
+This is an engineering increment, not validation evidence or a claim of full
+Part 11 compliance. The following plan items remain open: database-enforced
+runtime/schema separation, complete migration of every privileged caller to
+transaction-coupled audit writes, startup/export/restore/scheduled automated
+verification hooks, audit review acknowledgement and escalation, and approved
+retention/pruning controls. Deployment must protect `audit_signing.key` and
+`audit_anchor.json` with the operating-system/service ACLs described in the
+deployment procedure.
 
 ## Implementation sequence
 
