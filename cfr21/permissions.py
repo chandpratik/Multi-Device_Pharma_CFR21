@@ -36,6 +36,7 @@ PROTECTED_OPERATIONS = {
     "assign_devices",
     "manage_configurations",
     "manage_recipes",
+    "manage_audit_retention",
     "approve_configurations",
     "approve_recipes",
     "reconcile_batches",

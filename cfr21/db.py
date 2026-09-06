@@ -65,7 +65,7 @@ from typing import Generator
 log = logging.getLogger("pharma.cfr21.db")
 
 # ── Schema version — bump this when adding columns or tables ──────────────────
-_SCHEMA_VERSION = 16
+_SCHEMA_VERSION = 17
 
 _AUDIT_TABLE = "audit_trail"
 _AUDIT_TRIGGER_PREFIX = "prevent_audit_trail_"
@@ -458,6 +458,12 @@ def _migrate():
             conn.execute("UPDATE schema_version SET version = 16")
             current = 16
             log.info("Schema migrated to version 16 - runtime audit protection")
+
+        if current < 17:
+            _migrate_v17_audit_review_retention(conn)
+            conn.execute("UPDATE schema_version SET version = 17")
+            current = 17
+            log.info("Schema migrated to version 17 - audit review and retention controls")
 
 
 def _validate_permission_matrix():
@@ -918,6 +924,60 @@ def _migrate_v16_runtime_schema_controls(conn):
             'INSERT only', 'SQLite authorizer and append-only triggers',
             'SQLite has no native database users or GRANT ownership model.'
         )
+    """)
+
+
+def _migrate_v17_audit_review_retention(conn):
+    """Persist review evidence and versioned retention decisions."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS audit_review_acknowledgements (
+            id TEXT PRIMARY KEY,
+            first_audit_id INTEGER NOT NULL,
+            last_audit_id INTEGER NOT NULL,
+            reviewed_by TEXT NOT NULL,
+            reviewed_at TEXT NOT NULL,
+            review_reason TEXT NOT NULL,
+            chain_tail_hash TEXT NOT NULL,
+            UNIQUE(first_audit_id, last_audit_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS audit_review_exceptions (
+            id TEXT PRIMARY KEY,
+            first_audit_id INTEGER NOT NULL,
+            last_audit_id INTEGER NOT NULL,
+            raised_by TEXT NOT NULL,
+            raised_at TEXT NOT NULL,
+            exception_reason TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('open', 'resolved')),
+            resolution TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS audit_retention_policies (
+            id TEXT PRIMARY KEY,
+            version INTEGER NOT NULL UNIQUE,
+            retention_days INTEGER NOT NULL CHECK(retention_days > 0),
+            reason TEXT NOT NULL,
+            approved_by TEXT NOT NULL,
+            approved_at TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('active', 'superseded'))
+        )
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS prevent_audit_review_ack_delete
+        BEFORE DELETE ON audit_review_acknowledgements
+        BEGIN SELECT RAISE(ABORT, 'audit review evidence cannot be deleted'); END
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS prevent_audit_review_exception_delete
+        BEFORE DELETE ON audit_review_exceptions
+        BEGIN SELECT RAISE(ABORT, 'audit exception evidence cannot be deleted'); END
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS prevent_audit_retention_policy_delete
+        BEFORE DELETE ON audit_retention_policies
+        BEGIN SELECT RAISE(ABORT, 'audit retention policy cannot be deleted'); END
     """)
 
 
