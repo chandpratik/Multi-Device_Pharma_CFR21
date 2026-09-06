@@ -33,15 +33,21 @@ The first Part 3 increment is implemented in the current codebase:
   backup checkpoint verification, authorized restore, tampered candidate
   rejection, anchor publication, replacement rollback, and restore audit-write
   failure.
+- Runtime connections cannot update or delete audit rows or remove the
+  append-only protection triggers. SQLite deployment limitations are recorded
+  in runtime_schema_controls.
+- Startup, export, backup, and scheduled integrity verification fail closed
+  when the signed chain or external anchor is invalid.
+- Remaining compatibility calls are limited to authentication denials and
+  session/UI lifecycle notifications, where there is no regulated business
+  row to couple. Regulated account, device, version, settings, backup, export,
+  restore, review, and retention boundaries use the shared writer directly.
 
 This is an engineering increment, not validation evidence or a claim of full
-Part 11 compliance. The following plan items remain open: database-enforced
-runtime/schema separation, complete migration of every privileged caller to
-transaction-coupled audit writes, startup/export/scheduled automated
-verification hooks, audit review acknowledgement and escalation, and approved
-retention/pruning controls. Deployment must protect `audit_signing.key` and
-`audit_anchor.json` with the operating-system/service ACLs described in the
-deployment procedure.
+Part 11 compliance. The remaining production responsibility is execution and
+approval of the deployment ACL procedure and validation evidence for the target
+Windows service account. Physical audit pruning remains intentionally
+unavailable until an approved archive system exists.
 
 ## Implementation sequence
 
