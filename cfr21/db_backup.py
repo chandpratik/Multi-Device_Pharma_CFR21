@@ -59,6 +59,10 @@ def run_backup(log_dir: str, custom_dest: str = "") -> tuple[bool, str]:
     if not os.path.exists(src_path):
         return False, "compliance.db not found — nothing to back up."
 
+    chain_ok, chain_message, _ = audit.verify_chain()
+    if not chain_ok:
+        return False, f"Backup blocked by audit integrity failure: {chain_message}"
+
     backup_dir = _backup_dir(log_dir, custom_dest)
     try:
         os.makedirs(backup_dir, exist_ok=True)

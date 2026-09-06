@@ -215,6 +215,10 @@ def export_audit_trail(output_path: str,
         except AuthorizationError:
             return False, "You are not authorized to export audit records."
 
+        chain_ok, chain_message, _ = audit.verify_chain()
+        if not chain_ok:
+            return False, f"Export blocked by audit integrity failure: {chain_message}"
+
         records = audit.get_records(
             limit          = limit,
             username_filter= username_filter,
@@ -382,6 +386,10 @@ def export_batch_record(output_path: str,
             )
         except AuthorizationError:
             return False, "You are not authorized to export batch records."
+
+        chain_ok, chain_message, _ = audit.verify_chain()
+        if not chain_ok:
+            return False, f"Export blocked by audit integrity failure: {chain_message}"
 
         authoritative_batch, scan_rows = RegulatedRecordService().get_batch_record(
             batch_id, device_id)

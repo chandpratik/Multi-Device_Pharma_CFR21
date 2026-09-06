@@ -49,6 +49,18 @@ def test_manual_backup_is_deleted_when_audit_fails(admin_user, tmp_path, monkeyp
     assert not list(tmp_path.rglob("*.audit_checkpoint.json"))
 
 
+def test_backup_is_blocked_when_live_audit_chain_fails(admin_user, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        audit, "verify_chain",
+        lambda: (False, "forced chain failure", 3),
+    )
+    ok, message = run_backup_authorized(admin_user, "s-1", str(tmp_path))
+
+    assert not ok
+    assert "integrity" in message.lower()
+    assert not list(tmp_path.rglob("compliance_backup_*.db"))
+
+
 def test_restore_requires_issued_admin_session(admin_user, tmp_path):
     ok, backup_path = run_backup_authorized(admin_user, "s-1", str(tmp_path))
     assert ok, backup_path

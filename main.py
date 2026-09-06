@@ -58,15 +58,32 @@ def _check_db_integrity_on_startup(config):
         if os.path.exists(db_file):
             age_seconds = time.time() - os.path.getctime(db_file)
             if age_seconds < 30:
-                return   # Brand new DB — zero records is expected
+                return True   # Brand new DB — zero records is expected
 
         with get_conn_ctx() as conn:
             count = conn.execute(
                 "SELECT COUNT(*) FROM audit_trail"
             ).fetchone()[0]
 
+        chain_ok, chain_message, _ = audit.verify_chain()
+        if not chain_ok:
+            logging.getLogger("pharma.main").critical(
+                "Audit chain verification failed at startup: %s", chain_message)
+            try:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.critical(
+                    None,
+                    "Audit Integrity Failure",
+                    "The audit trail failed integrity verification. "
+                    "Production use is blocked until the issue is investigated.\n\n"
+                    f"{chain_message}",
+                )
+            except Exception:
+                pass
+            return False
+
         if count > 0:
-            return   # Normal — records exist
+            return True   # Normal — records exist
 
         # Zero records on an existing DB — check if backups exist
         backup_folder = _backup_dir(
@@ -97,11 +114,14 @@ def _check_db_integrity_on_startup(config):
                 "TAMPER ALERT: audit_trail empty but backups exist at %s",
                 backup_folder
             )
+            return False
 
     except Exception as e:
         logging.getLogger("pharma.main").error(
             "Startup DB integrity check failed: %s", e
         )
+        return False
+    return True
 
 
 def main():
@@ -149,7 +169,8 @@ def main():
     config = AppConfig.load()
 
     # ── 2b. Tamper/deletion detection ─────────────────────────────────────────
-    _check_db_integrity_on_startup(config)
+    if not _check_db_integrity_on_startup(config):
+        raise RuntimeError("Startup audit integrity verification failed.")
 
     # ── 3. Create the single SessionManager instance ──────────────────────────
     #   Policy values come from settings.json (configurable in Advanced Settings)
@@ -200,6 +221,18 @@ def main():
     _backup_timer.timeout.connect(_auto_backup)
     _backup_timer.start(4 * 60 * 60 * 1000)   # every 4 hours in ms
     _auto_backup()   # run once immediately on startup
+
+    _integrity_timer = _QTimer()
+
+    def _scheduled_integrity_check():
+        ok, message, checked = audit.verify_chain()
+        if not ok:
+            logging.getLogger("pharma.main").critical(
+                "Scheduled audit integrity check failed after %d records: %s",
+                checked, message)
+
+    _integrity_timer.timeout.connect(_scheduled_integrity_check)
+    _integrity_timer.start(15 * 60 * 1000)
 
     exit_code = app.exec()
 
