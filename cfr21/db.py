@@ -802,10 +802,15 @@ def _migrate_v13_reauthentication_grants(conn):
 
 def _migrate_v14_terminal_batch_immutability(conn):
     """Stop direct or service-level mutation after a terminal lifecycle state."""
+    conn.execute("DROP TRIGGER IF EXISTS prevent_terminal_batch_update")
     conn.execute("""
-        CREATE TRIGGER IF NOT EXISTS prevent_terminal_batch_update
+        CREATE TRIGGER prevent_terminal_batch_update
         BEFORE UPDATE ON regulated_batches
-        WHEN OLD.state IN ('released', 'closed')
+        WHEN OLD.state = 'closed'
+          OR (
+              OLD.state = 'released'
+              AND NOT (NEW.state = 'closed' AND NEW.version = OLD.version + 1)
+          )
         BEGIN SELECT RAISE(ABORT, 'released and closed batches are immutable'); END
     """)
 

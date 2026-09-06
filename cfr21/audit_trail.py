@@ -11,6 +11,7 @@ import hmac
 import json
 import logging
 import os
+import sqlite3
 import secrets
 import tempfile
 import threading
@@ -73,6 +74,8 @@ ACTION_PLC_WRITE_FAILED = "PLC_WRITE_FAILED"
 ACTION_AUDIT_VERIFIED = "AUDIT_CHAIN_VERIFIED"
 ACTION_ORPHAN_WAL_SEALED = "ORPHANED_WAL_SEALED"
 ACTION_BACKUP_CREATED = "BACKUP_CREATED"
+ACTION_DATABASE_RESTORE_COMMITTED = "DATABASE_RESTORE_COMMITTED"
+ACTION_DATABASE_RESTORE_FAILED = "DATABASE_RESTORE_FAILED"
 ACTION_DEVICE_QUARANTINED = "DEVICE_QUARANTINED"
 ACTION_INTEGRITY_FAILURE = "INTEGRITY_FAILURE"
 
@@ -182,7 +185,11 @@ def _key_path() -> str:
 
 
 def _anchor_path() -> str:
-    return os.path.join(os.path.dirname(os.path.abspath(db._db_path())),
+    return _anchor_path_for_db(db._db_path())
+
+
+def _anchor_path_for_db(database_path: str) -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(database_path)),
                         "audit_anchor.json")
 
 
@@ -222,11 +229,16 @@ def _signature(event: AuditEvent, record_hash: str, key: bytes) -> str:
     return hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-def _write_anchor(row: dict) -> None:
+def _anchor_payload(row: dict) -> dict:
+    audit_id = row.get("audit_id", row.get("id"))
+    return {"audit_id": audit_id, "event_id": row["event_id"],
+            "record_hash": row["record_hash"], "signature": row["signature"]}
+
+
+def _write_anchor(row: dict, anchor_path: Optional[str] = None) -> None:
     """Atomically update the latest-event anchor outside SQLite."""
-    payload = {"audit_id": row["id"], "event_id": row["event_id"],
-               "record_hash": row["record_hash"], "signature": row["signature"]}
-    path = _anchor_path()
+    payload = _anchor_payload(row)
+    path = anchor_path or _anchor_path()
     directory = os.path.dirname(path)
     fd, temp_path = tempfile.mkstemp(prefix="audit_anchor_", suffix=".tmp",
                                      dir=directory)
@@ -252,7 +264,8 @@ class AuditWriter:
     """The one serialized writer for standalone and coupled audit writes."""
 
     @staticmethod
-    def append_in_transaction(conn, event: AuditEvent) -> dict:
+    def append_in_transaction(conn, event: AuditEvent,
+                              publish_anchor: bool = True) -> dict:
         """Append to an already-open transaction; errors propagate."""
         event = event.with_defaults()
         with _AUDIT_WRITE_LOCK:
@@ -273,12 +286,14 @@ class AuditWriter:
                     correlation_id=event.correlation_id, timestamp=event.timestamp,
                 )
                 anomaly_row = AuditWriter._insert(conn, anomaly, prev_hash, key)
-                _write_anchor(anomaly_row)
+                if publish_anchor:
+                    _write_anchor(anomaly_row)
                 prev_hash = anomaly_row["record_hash"]
                 audit_log.critical("[AUDIT] CLOCK ANOMALY: %s", anomaly.detail)
             row = AuditWriter._insert(conn, event, prev_hash, key)
             # If this fails, the caller's transaction rolls back.
-            _write_anchor(row)
+            if publish_anchor:
+                _write_anchor(row)
             audit_log.info("[AUDIT] %s | %s | %s", event.actor_username,
                            event.action, event.readable())
             return row
@@ -364,11 +379,8 @@ def _verify_signature(row: Any, key: bytes) -> bool:
     return bool(row["signature"]) and hmac.compare_digest(expected, row["signature"])
 
 
-def verify_chain() -> tuple[bool, str, int]:
-    """Verify the local chain, protected signatures, and external anchor."""
-    try:
-        with get_conn_ctx() as conn:
-            rows = conn.execute("""
+def _fetch_audit_rows(conn) -> list[Any]:
+    return conn.execute("""
                 SELECT id, event_id, timestamp, actor_id, username, role,
                        action, detail, reason, workstation, session_id,
                        target_type, target_id, target_version, old_value_json,
@@ -376,52 +388,199 @@ def verify_chain() -> tuple[bool, str, int]:
                        record_hash, signature
                 FROM audit_trail ORDER BY id ASC
             """).fetchall()
-        key = _signing_key(create=False)
-        checked, prev_hash, chain_started = 0, None, False
-        for row in rows:
-            if row["record_hash"] is None:
-                if chain_started:
-                    return False, f"Record id={row['id']} has no hash after hashed records.", checked
-                continue
-            if not chain_started:
-                chain_started, prev_hash = True, row["prev_hash"]
-            if row["prev_hash"] != prev_hash:
-                return False, f"Chain broken at record id={row['id']}: previous link mismatch.", checked
-            if row["event_id"]:
-                expected = _compute_record_hash(
-                    row["prev_hash"], row["timestamp"], row["username"], row["role"],
-                    row["action"], row["detail"], row["reason"], row["workstation"],
-                    row["session_id"], row["event_id"], row["actor_id"] or 0,
-                    row["target_type"] or "", row["target_id"] or "",
-                    row["target_version"], row["old_value_json"], row["new_value_json"],
-                    row["result"] or "success", row["correlation_id"] or "")
-            else:
-                expected = _compute_legacy_record_hash(
-                    row["prev_hash"], row["timestamp"], row["username"], row["role"],
-                    row["action"], row["detail"], row["reason"], row["workstation"],
-                    row["session_id"])
-            if expected != row["record_hash"]:
-                return False, f"Record id={row['id']} fails hash verification.", checked
-            if row["event_id"] and row["signature"]:
-                if key is None or not _verify_signature(row, key):
-                    return False, f"Record id={row['id']} fails protected signature verification.", checked
-            prev_hash, checked = row["record_hash"], checked + 1
 
+
+def _verify_rows(rows: list[Any], anchor: Optional[dict],
+                 require_anchor: bool) -> tuple[bool, str, int]:
+    key = _signing_key(create=False)
+    checked, prev_hash, chain_started = 0, None, False
+    for row in rows:
+        if row["record_hash"] is None:
+            if chain_started:
+                return False, f"Record id={row['id']} has no hash after hashed records.", checked
+            continue
+        if not chain_started:
+            chain_started, prev_hash = True, row["prev_hash"]
+        if row["prev_hash"] != prev_hash:
+            return False, f"Chain broken at record id={row['id']}: previous link mismatch.", checked
+        if row["event_id"]:
+            expected = _compute_record_hash(
+                row["prev_hash"], row["timestamp"], row["username"], row["role"],
+                row["action"], row["detail"], row["reason"], row["workstation"],
+                row["session_id"], row["event_id"], row["actor_id"] or 0,
+                row["target_type"] or "", row["target_id"] or "",
+                row["target_version"], row["old_value_json"], row["new_value_json"],
+                row["result"] or "success", row["correlation_id"] or "")
+        else:
+            expected = _compute_legacy_record_hash(
+                row["prev_hash"], row["timestamp"], row["username"], row["role"],
+                row["action"], row["detail"], row["reason"], row["workstation"],
+                row["session_id"])
+        if expected != row["record_hash"]:
+            return False, f"Record id={row['id']} fails hash verification.", checked
+        if row["event_id"] and row["signature"]:
+            if key is None or not _verify_signature(row, key):
+                return False, f"Record id={row['id']} fails protected signature verification.", checked
+        prev_hash, checked = row["record_hash"], checked + 1
+
+    if rows and rows[-1]["event_id"]:
+        if key is None:
+            return False, "Protected audit signing key is unavailable.", checked
+        if anchor is None:
+            if require_anchor:
+                return False, "Audit anchor is unavailable.", checked
+            return True, f"Audit trail verified - {checked} hashed records intact.", checked
+        last = rows[-1]
+        if anchor.get("audit_id") != last["id"]:
+            return False, "Audit anchor does not match last event (id).", checked
+        for field in ("event_id", "record_hash", "signature"):
+            if anchor.get(field) != last[field]:
+                return False, f"Audit anchor does not match last event ({field}).", checked
+    return True, f"Audit trail verified - {checked} hashed records intact.", checked
+
+
+def verify_database_chain(database_path: str,
+                          anchor: Optional[dict] = None,
+                          require_anchor: bool = False) -> tuple[bool, str, int]:
+    """Verify a database file without consulting the live database path."""
+    try:
+        conn = sqlite3.connect(database_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = _fetch_audit_rows(conn)
+        finally:
+            conn.close()
+        return _verify_rows(rows, anchor, require_anchor)
+    except Exception as exc:
+        audit_log.error("verify_database_chain() failed: %s", exc)
+        return False, f"Verification error: {exc}", 0
+
+
+def latest_anchor_for_database(database_path: str) -> dict:
+    """Return the anchor payload for the last structured audit row in a DB."""
+    payload = _latest_anchor_for_database(database_path)
+    if payload is None:
+        raise AuditWriteError("Database has no structured audit tail to anchor")
+    return payload
+
+
+def _latest_anchor_for_database(database_path: str) -> Optional[dict]:
+    conn = sqlite3.connect(database_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute("""
+            SELECT id, event_id, record_hash, signature
+            FROM audit_trail ORDER BY id DESC LIMIT 1
+        """).fetchone()
+    finally:
+        conn.close()
+    if row is None or not row["event_id"]:
+        return None
+    return _anchor_payload(dict(row))
+
+
+def publish_anchor_for_database(database_path: str) -> dict:
+    """Publish the external anchor for the supplied database path."""
+    payload = latest_anchor_for_database(database_path)
+    _write_anchor(payload, _anchor_path_for_db(database_path))
+    return payload
+
+
+def _checkpoint_signature(payload: dict, key: bytes) -> str:
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hmac.new(key, raw.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_detached_checkpoint(database_path: str) -> str:
+    """Write a signed checkpoint sidecar for a detached database backup."""
+    database_path = os.path.abspath(database_path)
+    ok, message, _ = verify_database_chain(database_path, require_anchor=False)
+    if not ok:
+        raise AuditWriteError(f"Cannot checkpoint unverifiable database: {message}")
+    body = {
+        "version": 1,
+        "database_file": os.path.basename(database_path),
+        "sha256": sha256_file(database_path),
+        "tail": _latest_anchor_for_database(database_path),
+    }
+    key = _signing_key()
+    checkpoint = dict(body)
+    checkpoint["signature"] = _checkpoint_signature(body, key)
+    path = database_path + ".audit_checkpoint.json"
+    fd, temp_path = tempfile.mkstemp(prefix="audit_checkpoint_", suffix=".tmp",
+                                     dir=os.path.dirname(database_path))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(checkpoint, handle, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        return path
+    except Exception as exc:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise AuditWriteError(f"Unable to write detached audit checkpoint: {path}") from exc
+
+
+def verify_detached_checkpoint(database_path: str) -> tuple[bool, str, Optional[dict]]:
+    """Verify a backup file against its signed checkpoint sidecar."""
+    checkpoint_path = os.path.abspath(database_path) + ".audit_checkpoint.json"
+    try:
+        with open(checkpoint_path, "r", encoding="utf-8") as handle:
+            checkpoint = json.load(handle)
+        signature = checkpoint.pop("signature")
+        key = _signing_key(create=False)
+        if key is None:
+            return False, "Protected audit signing key is unavailable.", None
+        expected = _checkpoint_signature(checkpoint, key)
+        if not hmac.compare_digest(signature, expected):
+            return False, "Detached audit checkpoint signature mismatch.", None
+        if checkpoint.get("database_file") != os.path.basename(database_path):
+            return False, "Detached audit checkpoint database name mismatch.", None
+        if checkpoint.get("sha256") != sha256_file(database_path):
+            return False, "Detached audit checkpoint database digest mismatch.", None
+        tail = checkpoint.get("tail")
+        if tail is not None and not isinstance(tail, dict):
+            return False, "Detached audit checkpoint tail is invalid.", None
+        ok, message, checked = verify_database_chain(
+            database_path, tail, require_anchor=tail is not None)
+        if not ok:
+            return False, message, None
+        return True, f"Detached audit checkpoint verified - {checked} hashed records intact.", tail
+    except Exception as exc:
+        return False, f"Detached audit checkpoint verification error: {exc}", None
+
+
+def verify_chain() -> tuple[bool, str, int]:
+    """Verify the local chain, protected signatures, and external anchor."""
+    try:
+        with get_conn_ctx() as conn:
+            rows = _fetch_audit_rows(conn)
+        key = _signing_key(create=False)
+        anchor = None
         if rows and rows[-1]["event_id"]:
             if key is None:
-                return False, "Protected audit signing key is unavailable.", checked
+                return False, "Protected audit signing key is unavailable.", 0
             try:
                 with open(_anchor_path(), "r", encoding="utf-8") as handle:
                     anchor = json.load(handle)
             except Exception as exc:
-                return False, f"Audit anchor is unavailable: {exc}", checked
-            last = rows[-1]
-            if anchor.get("audit_id") != last["id"]:
-                return False, "Audit anchor does not match last event (id).", checked
-            for field in ("event_id", "record_hash", "signature"):
-                if anchor.get(field) != last[field]:
-                    return False, f"Audit anchor does not match last event ({field}).", checked
-        return True, f"Audit trail verified - {checked} hashed records intact.", checked
+                return False, f"Audit anchor is unavailable: {exc}", 0
+        return _verify_rows(rows, anchor, require_anchor=True)
     except Exception as exc:
         audit_log.error("verify_chain() failed: %s", exc)
         return False, f"Verification error: {exc}", 0

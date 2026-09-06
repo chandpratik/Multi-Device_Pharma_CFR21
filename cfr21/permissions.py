@@ -20,6 +20,7 @@ PROTECTED_OPERATIONS = {
     "change_own_password",
     "change_settings",
     "backup_database",
+    "restore_database",
     "clear_master_code",
     "close_batch",
     "connect_camera",

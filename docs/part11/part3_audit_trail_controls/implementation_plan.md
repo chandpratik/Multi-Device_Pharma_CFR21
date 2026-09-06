@@ -18,13 +18,26 @@ The first Part 3 increment is implemented in the current codebase:
 - New events are signed with a generated protected-key file outside SQLite,
   and the latest event is atomically recorded in an external anchor file.
   Verification checks the structured hash chain, signatures, and anchor.
+- Database backups receive signed detached audit checkpoint sidecars. Restore
+  candidates must pass SQLite integrity checks, file-digest verification,
+  checkpoint-signature verification, protected audit-signature verification,
+  and detached-tail verification before live replacement is attempted.
+- Authorized database restore now requires an issued administrator session,
+  a non-empty reason, and a change-control identifier. Restore evidence is
+  staged in the candidate database without moving the live anchor; after atomic
+  replacement, the new anchor is published and the live chain is re-verified.
+  Replacement/post-replacement failures restore a rollback snapshot and record
+  failure evidence where audit integrity permits.
 - Regression coverage was added for structured fields, rollback on audit
-  failure, concurrent writers, local-hash recalculation, and tail truncation.
+  failure, concurrent writers, local-hash recalculation, tail truncation,
+  backup checkpoint verification, authorized restore, tampered candidate
+  rejection, anchor publication, replacement rollback, and restore audit-write
+  failure.
 
 This is an engineering increment, not validation evidence or a claim of full
 Part 11 compliance. The following plan items remain open: database-enforced
 runtime/schema separation, complete migration of every privileged caller to
-transaction-coupled audit writes, startup/export/restore/scheduled automated
+transaction-coupled audit writes, startup/export/scheduled automated
 verification hooks, audit review acknowledgement and escalation, and approved
 retention/pruning controls. Deployment must protect `audit_signing.key` and
 `audit_anchor.json` with the operating-system/service ACLs described in the
