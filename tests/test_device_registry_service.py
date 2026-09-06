@@ -1,6 +1,7 @@
 """Tests for controlled device identity approval and batch assignment."""
 
 import cfr21.db as db
+import cfr21.audit_trail as audit
 from cfr21.device_registry_service import DeviceRegistryError, DeviceRegistryService
 from cfr21.regulated_records import RegulatedRecordError, RegulatedRecordService
 from cfr21.reauthentication_service import issue_grant
@@ -96,3 +97,23 @@ def test_disabled_or_unapproved_assigned_device_fails_closed(admin_user):
         pass
     else:
         raise AssertionError("An unapproved device was accepted by scan capture")
+
+
+def test_device_registration_rolls_back_when_audit_fails(admin_user, monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise audit.AuditWriteError("forced audit failure")
+
+    monkeypatch.setattr(audit.AuditWriter, "append_in_transaction", fail)
+    try:
+        DeviceRegistryService().register_device(
+            admin_user, "s-1", 99, "audit-failure-device",
+            "Audit failure device", "qualification record")
+    except audit.AuditWriteError:
+        pass
+    else:
+        raise AssertionError("device registration succeeded without audit evidence")
+
+    with db.get_conn_ctx() as conn:
+        assert conn.execute("""
+            SELECT COUNT(*) FROM devices WHERE source_identifier = ?
+        """, ("audit-failure-device",)).fetchone()[0] == 0

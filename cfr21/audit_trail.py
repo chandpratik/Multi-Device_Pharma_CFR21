@@ -326,6 +326,34 @@ class AuditWriter:
                 "signature": signature}
 
 
+def event_for_user(user: Optional[User], action: str, detail: str,
+                   session_id: str = "", reason: Optional[str] = None,
+                   **kwargs) -> AuditEvent:
+    """Build a structured event for a service-owned transaction boundary."""
+    return AuditEvent(
+        action=action,
+        detail=detail,
+        actor_id=user.id if user else 0,
+        actor_username=user.username if user else "system",
+        role=user.role if user else "system",
+        session_id=session_id,
+        workstation=get_workstation(),
+        reason=reason,
+        **kwargs,
+    )
+
+
+def append_event_in_transaction(conn, user: Optional[User], action: str,
+                                detail: str, session_id: str = "",
+                                reason: Optional[str] = None,
+                                **kwargs) -> dict:
+    """Append one structured event to a caller-owned transaction."""
+    return AuditWriter.append_in_transaction(
+        conn,
+        event_for_user(user, action, detail, session_id, reason, **kwargs),
+    )
+
+
 def append_event(event: AuditEvent) -> dict:
     """Append one standalone event and fail visibly if it cannot be stored."""
     with _AUDIT_WRITE_LOCK:
@@ -351,11 +379,7 @@ def append_event(event: AuditEvent) -> dict:
 def log(user: Optional[User], action: str, detail: str,
         session_id: str = "", reason: Optional[str] = None, **kwargs) -> bool:
     """Compatibility wrapper; accepts all structured AuditEvent fields."""
-    event = AuditEvent(
-        action=action, detail=detail, actor_id=user.id if user else 0,
-        actor_username=user.username if user else "system",
-        role=user.role if user else "system", session_id=session_id,
-        workstation=get_workstation(), reason=reason, **kwargs)
+    event = event_for_user(user, action, detail, session_id, reason, **kwargs)
     try:
         append_event(event)
         return True

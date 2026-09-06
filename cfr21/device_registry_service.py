@@ -60,9 +60,10 @@ class DeviceRegistryService:
                 ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 1, ?)
             """, (device_id, device_number, source, display_name.strip(), _utc_now(),
                   actor.username, reason.strip()))
-        audit.log(actor, "DEVICE_REGISTERED",
-                  f"Device '{device_id}' registered: number={device_number}; source='{source}'.",
-                  session_id=session_id, reason=reason.strip())
+            audit.append_event_in_transaction(
+                conn, actor, "DEVICE_REGISTERED",
+                f"Device '{device_id}' registered: number={device_number}; source='{source}'.",
+                session_id, reason.strip(), target_type="device", target_id=device_id)
         return device_id
 
     def approve_device(self, actor: User, session_id: str, device_id: str,
@@ -84,8 +85,9 @@ class DeviceRegistryService:
             """, (_utc_now(), actor.username, reason.strip(), device_id)).rowcount
             if updated != 1:
                 raise DeviceRegistryError("Only a pending registered device can be approved.")
-        audit.log(actor, "DEVICE_APPROVED", f"Device '{device_id}' approved.",
-                  session_id=session_id, reason=reason.strip())
+            audit.append_event_in_transaction(
+                conn, actor, "DEVICE_APPROVED", f"Device '{device_id}' approved.",
+                session_id, reason.strip(), target_type="device", target_id=device_id)
 
     def deactivate_device(self, actor: User, session_id: str, device_id: str,
                           reason: str, reauthentication_grant_id: str = "") -> None:
@@ -106,8 +108,11 @@ class DeviceRegistryService:
             """, (_utc_now(), actor.username, reason.strip(), device_id)).rowcount
             if updated != 1:
                 raise DeviceRegistryError("The device is unknown or already deactivated.")
-        audit.log(actor, "DEVICE_DEACTIVATED", f"Device '{device_id}' deactivated.",
-                  session_id=session_id, reason=reason.strip())
+            audit.append_event_in_transaction(
+                conn, actor, "DEVICE_DEACTIVATED",
+                f"Device '{device_id}' deactivated.",
+                session_id, reason.strip(), target_type="device", target_id=device_id,
+                result="success")
 
     def replace_device(self, actor: User, session_id: str, device_id: str,
                        replacement_number: int, replacement_source: str,
@@ -144,9 +149,11 @@ class DeviceRegistryService:
             """, (replacement_id, replacement_number, replacement_source.strip(),
                   replacement_display_name.strip(), _utc_now(), actor.username,
                   f"Replacement for {device_id}: {reason.strip()}"))
-        audit.log(actor, "DEVICE_REPLACED",
-                  f"Device '{device_id}' retired; pending replacement '{replacement_id}' registered.",
-                  session_id=session_id, reason=reason.strip())
+            audit.append_event_in_transaction(
+                conn, actor, "DEVICE_REPLACED",
+                f"Device '{device_id}' retired; pending replacement '{replacement_id}' registered.",
+                session_id, reason.strip(), target_type="device", target_id=device_id,
+                new_value={"replacement_id": replacement_id})
         return replacement_id
 
     def assign_device(self, actor: User, session_id: str, batch_id: str,
@@ -177,9 +184,11 @@ class DeviceRegistryService:
                 """, (assignment_id, batch_id, device_id, _utc_now(), actor.username, reason.strip()))
             except Exception as exc:
                 raise DeviceRegistryError("This device is already assigned to the batch.") from exc
-        audit.log(actor, "BATCH_DEVICE_ASSIGNED",
-                  f"Device '{device_id}' assigned to batch '{batch_id}'.",
-                  session_id=session_id, reason=reason.strip())
+            audit.append_event_in_transaction(
+                conn, actor, "BATCH_DEVICE_ASSIGNED",
+                f"Device '{device_id}' assigned to batch '{batch_id}'.",
+                session_id, reason.strip(), target_type="batch", target_id=batch_id,
+                new_value={"device_id": device_id, "assignment_id": assignment_id})
         return assignment_id
 
 

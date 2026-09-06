@@ -60,8 +60,11 @@ class VersionControlService:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
             """, (version_id, value, _utc_now(), actor.username, number,
                   prior_version_id or None, reason.strip()))
-        audit.log(actor, action, f"Pending version '{version_id}' created.",
-                  session_id=session_id, reason=reason.strip())
+            audit.append_event_in_transaction(
+                conn, actor, action, f"Pending version '{version_id}' created.",
+                session_id, reason.strip(), target_type=table,
+                target_id=version_id, target_version=number,
+                new_value={"approval_status": "pending", "version_number": number})
         return version_id
 
     def approve_configuration(self, actor: User, session_id: str, version_id: str,
@@ -97,8 +100,10 @@ class VersionControlService:
                 UPDATE {table} SET approval_status = 'approved', approved_at = ?,
                     approved_by = ?, effective_at = ? WHERE id = ?
             """, (_utc_now(), actor.username, _utc_now(), version_id))
-        audit.log(actor, action, f"Version '{version_id}' approved.",
-                  session_id=session_id, reason=reason.strip())
+            audit.append_event_in_transaction(
+                conn, actor, action, f"Version '{version_id}' approved.",
+                session_id, reason.strip(), target_type=table,
+                target_id=version_id, new_value={"approval_status": "approved"})
 
 
 _SERVICE = VersionControlService()
